@@ -1,0 +1,52 @@
+# The MP controller reads this file, not the inherited TMF loadout.
+controller = "PyXasecoMP"
+
+[loadout]
+enabled = [
+"app/platform_core",
+"app/pyxa_stats",
+"app/help",
+"app/records_local",
+"app/records_trial",
+"app/records_rpg",
+"app/players",
+"app/social_chat",
+"app/platform_ui",
+"app/tmx",
+"app/jukebox",
+"app/voting",
+"app/admin",
+"app/apps_manager",
+"app/jfreu",
+"app/ui",
+"app/server_info",
+"app/bestfinishes",
+"app/ztrack",
+"app/checkpoint_tools",
+"app/best_cp_times"
+]
+disabled = [
+"app/mp_panels",
+"app/discord",
+"app/records_dedimania",
+"app/ui_fast",
+"app/sponsor_banner",
+"app/server_admin_bridge",
+"app/match_overlay",
+"app/alternate_scoretable",
+"app/server_neighborhood",
+"app/records_ultimania",
+"app/records_wrmania",
+"app/dbtools",
+"app/serverstats",
+"app/forcemods",
+"app/hidechat",
+"app/quotes",
+"app/cgps",
+"app/seqinfomsg",
+"app/flexitime",
+"app/endlesstmxr",
+"app/bestsecs",
+"app/bestruns",
+"app/bestcps"
+]
