@@ -71,17 +71,5 @@ and the website's `stabletm2` feed. Update checks are off by default. Both
 publishers must agree before a ZIP can be staged. Do not install a TMF package
 into this repository or into an MP controller.
 
-## Test and Contribute
-
-```powershell
-py -3.12 -B -m unittest discover -s tests -p "test_mp_titlepacks.py"
-py -3.12 -B -m unittest discover -s tests -p "test_maniaplanet_exchange.py"
-```
-
-These checks use temporary files and mocks, not a live dedicated server or
-database. Tests that compare sibling TMF, website, sync or publisher sources
-use those checkouts only when present. Keep production settings, credentials,
-logs, replays, live playlists and runtime data out of commits.
-
 See [app credits](APP_CREDITS.md) for inherited components and [GPLv3](LICENSE)
 for the license.
