@@ -364,9 +364,6 @@ class AppsManagerService:
         self.next_notice = 0
 
     def configure_updates(self, aseco):
-        if getattr(aseco, 'is_maniaplanet', False):
-            self.update_settings = {}
-            return
         try:
             self.update_settings = read_toml(_root_dir(aseco) / 'apps/apps_manager/app_defaults.toml').get('apps_manager', {}).get('updates', {})
         except (OSError, ValueError, AttributeError):
@@ -419,10 +416,6 @@ class AppsManagerService:
         if not _is_masteradmin(aseco, admin, login):
             await _reply(aseco, login, '{#server}> {#error}Only MasterAdmins may check or download releases.')
             return
-        if getattr(aseco, 'is_maniaplanet', False):
-            if not quiet:
-                await _reply(aseco, login, '{#server}> {#error}TMF release packages cannot be installed on PyXasecoMP.')
-            return
         if self.release_busy:
             if not quiet:
                 await _reply(aseco, login, '{#server}> {#message}An update operation is already running.')
@@ -433,8 +426,16 @@ class AppsManagerService:
         from pyxaseco.core.background_jobs import Admission, JobEnvelope, JobPolicy
         if not aseco.jobs.running:
             return
-        self.configure_updates(aseco)
-        client = UpdateClient(_root_dir(aseco), PYXASECO_VERSION, settings=dict(self.update_settings))
+        try:
+            client = UpdateClient(_root_dir(aseco), PYXASECO_VERSION)
+        except (ManagementError, OSError) as error:
+            self.update_settings = {}
+            logger.warning('[Updates] %s', error)
+            if not quiet:
+                await _reply(aseco, login, '{#server}> {#error}' + (
+                    str(error) if isinstance(error, ManagementError) else 'Could not read the Apps Manager update settings.'))
+            return
+        self.update_settings = client.settings
         self.release_busy = True
         self.copying = install
         job = JobEnvelope.capture(aseco.capture_job_context(login=login), {'package': identity})

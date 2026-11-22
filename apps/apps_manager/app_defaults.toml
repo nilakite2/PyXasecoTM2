@@ -1,6 +1,6 @@
 [apps_manager.updates]
 # Opt in after the same MP release is available on both publishers.
-enabled = false
+enabled = true
 channel = "stabletm2"
 # Same catalogue, ZIP and SHA-256 file published independently on both hosts.
 verification = "sha256"

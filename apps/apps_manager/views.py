@@ -159,9 +159,8 @@ def _show_apps_manager_window(aseco: 'Aseco', admin) -> None:
     service = get_service(aseco)
     release_state = ('Pending restart' if service and service.restart_needed else
                      'Downloaded, not installed' if service and 'downloaded' in service.package_states.values() else '')
-    if not getattr(aseco, 'is_maniaplanet', False):
-        rows.append(['Verified Releases', 'Packages', release_state,
-                     _action_cell(admin, 'Check', ('check_releases',)), '', ''])
+    rows.append(['Verified Releases', 'Packages', release_state,
+                 _action_cell(admin, 'Check', ('check_releases',)), '', ''])
 
     rows.append(['{#highlite}Configurable App Homes', '', '', '', '', ''])
     config_apps = list(_discover_config_apps(aseco).items())

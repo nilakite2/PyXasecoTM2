@@ -39,8 +39,10 @@ class UpdateClient:
                 data = tomllib.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
                 section = data.get('apps_manager', {})
                 settings = section.get('updates', {}) if isinstance(section, dict) else None
-            except (tomllib.TOMLDecodeError, UnicodeError):
-                raise ManagementError('Apps Manager update settings contain invalid TOML') from None
+            except tomllib.TOMLDecodeError as error:
+                raise ManagementError(f'apps/apps_manager/app_defaults.toml: {error}') from None
+            except UnicodeError:
+                raise ManagementError('apps/apps_manager/app_defaults.toml must use UTF-8 encoding') from None
         if not isinstance(settings, dict):
             raise ManagementError('Apps Manager updates must be configured as a TOML table')
         self.settings = settings
