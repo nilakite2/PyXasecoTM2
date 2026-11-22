@@ -85,5 +85,12 @@ def register(aseco: "Aseco"):
     APP_INSTANCE.register_runtime(aseco)
 
 
+def validate_config(document, _root):
+    section = document.get('flexitime', {})
+    if not isinstance(section, dict):
+        raise ValueError('FlexiTime settings must be a table.')
+    flexitime.hud_geometry(section.get('hud', {}))
+
+
 async def reload_runtime(aseco: "Aseco") -> None:
     await flexitime.reload_flexitime_runtime(aseco)

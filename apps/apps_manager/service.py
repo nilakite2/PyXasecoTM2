@@ -26,6 +26,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+LOADOUT_TOGGLE_APPS = {**MANAGEABLE_STANDALONE_APPS, 'management_bridge': 'Local Management Bridge'}
+
 _config_snapshot: ContextVar[dict[Path, dict[str, Any]] | None] = ContextVar(
     'apps_manager_config_snapshot', default=None,
 )
@@ -126,6 +128,11 @@ CONFIG_APPS: dict[str, dict[str, str]] = {
         'label': 'Checkpoint Tools',
         'save_mode': 'reload',
         'description': 'Checkpoint live overlay settings',
+    },
+    'flexitime': {
+        'label': 'FlexiTime',
+        'save_mode': 'reload',
+        'description': 'Time Attack timer settings and HUD layout',
     },
     'endlesstmxr': {
         'label': 'Endless TMX Random',
@@ -657,6 +664,18 @@ def _config_items_for_app(aseco: 'Aseco', app_key: str) -> list[dict[str, Any]]:
 
     file_path = _app_defaults_path_for_app(aseco, app_key)
     if file_path.exists():
+        if app_key == 'flexitime' and getattr(aseco, 'is_maniaplanet', False):
+            timer = sys.modules.get('apps.flexitime.flexitime')
+            defaults = getattr(timer, 'HUD_DEFAULTS', None)
+            if defaults:
+                append_item({
+                    'key': 'hud', 'label': 'Timer HUD',
+                    'file': 'apps/flexitime/app_defaults.toml',
+                    'table_path': ('flexitime', 'hud'),
+                    'default_fields': defaults,
+                    'field_labels': {'width': 'Background width', 'height': 'Background height',
+                                     'text_scale': 'Timer text scale'},
+                })
         data = read_toml(file_path)
         for root_key, root_value in data.items():
             if not isinstance(root_value, dict):
@@ -769,7 +788,7 @@ def _standalone_paths(aseco: 'Aseco', name: str) -> tuple[Path, Path | None]:
 
 
 def _is_manageable_standalone_app(aseco: 'Aseco', name: str) -> bool:
-    if name not in MANAGEABLE_STANDALONE_APPS:
+    if name not in LOADOUT_TOGGLE_APPS:
         return False
     app_dir, archived = _standalone_paths(aseco, name)
     state = _standalone_loadout_state(aseco, name)
@@ -777,7 +796,7 @@ def _is_manageable_standalone_app(aseco: 'Aseco', name: str) -> bool:
 
 
 def _standalone_app_names() -> list[str]:
-    return list(MANAGEABLE_STANDALONE_APPS.keys())
+    return list(LOADOUT_TOGGLE_APPS)
 
 
 def _standalone_status(aseco: 'Aseco', name: str) -> str:
@@ -1277,6 +1296,7 @@ def _editable_fields_from_info(aseco: 'Aseco', item: dict[str, Any], info: dict[
         if not isinstance(numeric, (int, float)) or not isfinite(numeric):
             return
         axis, label = position or (None, {'size_w': 'width', 'size_h': 'height'}.get(field_key, field_key))
+        label = item.get('field_labels', {}).get(field_key, label)
         if item['key'] == 'banner' and field_key == 'width':
             label = 'Maximum width'
         write_key = write_key or field_key

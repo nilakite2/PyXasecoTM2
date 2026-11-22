@@ -75,13 +75,25 @@ def build(payload, rankings, pbs, pb_available):
         row = metadata.pop(login, {'login': login, 'name': str(raw.get('NickName') or login)[:160],
             'id': 0, 'spectator': False, 'connected': False, 'team': -1, 'ladder': 0,
             'nation': '-', 'created': 0, 'finishes': 0, 'best': 0})
+        best_time = raw.get('BestTime')
+        if payload.get('scripted_ta') and not best_time:
+            best_time = row['best']
         row.update(rank=max(0, number(raw.get('Rank'))), score=max(0, number(raw.get('Score'))),
-                   time=max(0, number(raw.get('BestTime'))))
+                   time=max(0, number(best_time)))
         ordered.append(row)
     for row in metadata.values():
         row.update(rank=0, score=row['best'] if mode == 4 else 0, time=row['best'] if mode != 4 else 0)
         ordered.append(row)
-    if mode == 2:
+    if payload.get('scripted_ta'):
+        # Scripted GetCurrentRanking does not expose BestTime. Use this map's
+        # observed finishes, never LocalDB PBs from earlier visits.
+        ordered.sort(key=lambda row: (row['time'] <= 0, row['time'], row['login']))
+        last_time, rank = 0, 0
+        for index, row in enumerate(ordered, 1):
+            if row['time'] != last_time:
+                last_time, rank = row['time'], index
+            row['rank'] = rank if row['time'] > 0 else 0
+    elif mode == 2:
         ordered.sort(key=lambda row: (row['team'] not in (0, 1), row['team'], row['spectator'],
                                      row['time'] <= 0, row['time'], row['login']))
     else:

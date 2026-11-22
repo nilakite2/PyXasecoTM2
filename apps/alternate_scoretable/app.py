@@ -19,7 +19,7 @@ SCHEMA = AppSettingsSchema(app_id='alternate_scoretable', settings=(
     AppSetting('enabled', True, as_bool, 'Enable Alternate Scoretable.'),
     AppSetting('entries', 20, as_int, 'Rows per page, 5-20.'),
     AppSetting('show_at_score', True, as_bool, 'Automatically open at the end of the map.'),
-    AppSetting('show_at_finish', True, as_bool, 'Automatically open after a positive finish.'),
+    AppSetting('show_at_finish', False, as_bool, 'Automatically open after a positive finish.'),
     AppSetting('delay_score_display', 5, as_int, 'End-of-map delay, 0-30 seconds.'),
     AppSetting('delay_finish_display', 3, as_int, 'Finish popup delay, 0-30 seconds.'),
     AppSetting('score_display_time', 20, as_int, 'Automatic end-of-map popup duration, 1-120 seconds.'),
@@ -182,6 +182,7 @@ class AlternateScoretableApp(App):
         records = getattr(aseco.server, 'records', ())
         local = {record.player.login: record.score for record in records if getattr(record, 'player', None)}
         return {'mode': mode, 'map': str(getattr(track, 'name', '') or '')[:160],
+                'scripted_ta': bool(getattr(aseco, 'is_maniaplanet', False) and mode == 1),
                 'challenge_id': results.number(getattr(track, 'id', 0)),
                 'players': list(self.players.values()), 'local_pbs': local}
 
@@ -205,7 +206,12 @@ class AlternateScoretableApp(App):
 
         async def operation(envelope):
             snapshot = envelope.payload()
-            ranks = final if use_final else await aseco.client.query('GetCurrentRanking', results.MAX_PLAYERS, 0)
+            if use_final:
+                ranks = final
+            elif snapshot.get('scripted_ta'):
+                ranks = []
+            else:
+                ranks = await aseco.client.query('GetCurrentRanking', results.MAX_PLAYERS, 0)
             if not isinstance(ranks, list):
                 raise ValueError('Invalid dedicated-server ranking response')
             pbs, available = {}, False

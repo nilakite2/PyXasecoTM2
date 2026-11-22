@@ -3,7 +3,7 @@
 from html import escape
 import re
 
-from pyxaseco.helpers import ML_ID_MAIN, clean_tm_text, format_time
+from pyxaseco.helpers import ML_ID_MAIN, clean_tm_text, format_time, format_widget_time
 from .record_layout import record_columns, fitted_size
 
 
@@ -67,7 +67,7 @@ def record_widget(*, ml_id, cfg, entries, online, login, mode, palette, mark_onl
             return '--'
         if is_live or mode == 4 or isinstance(score, str):
             return str(score)
-        return aseco.format_time(int(score)) if mp else format_time(int(score))
+        return format_widget_time(int(score)) if mp else format_time(int(score))
     columns = record_columns(width, [f"{entry.get('rank')}." for entry in visible],
                              [score_text(entry) for entry in visible]) if mp else None
     parts = [f'<manialink id="{ml_id}"><frame posn="{cfg.pos_x:.4f} {cfg.pos_y:.4f} 0">',

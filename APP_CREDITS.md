@@ -28,12 +28,11 @@
 | [JFreu](apps/jfreu/README.md) | JFreu; XAseco updates by Xymph; Unspec fix by FuFi. |
 | [Jukebox](apps/jukebox/README.md) | RASP: Xymph and AssemblerManiac. |
 | [Match Overlay](apps/match_overlay/README.md) | Chris92 and TheM; inspired by svenstucki's ESL TV tSplash. |
-| [Platform Core](apps/platform_core/README.md) | Localdatabase: Florian Schnell / Xymph. XAseco gameplay services: Xymph. RASP: Xymph / AssemblerManiac. FreeZone: NADEO. |
+| [Platform Core](apps/platform_core/README.md) | Localdatabase: Florian Schnell / Xymph. XAseco gameplay services: Xymph. RASP: Xymph / AssemblerManiac. |
 | [Platform UI](apps/platform_ui/README.md) | XAseco styles, panels and Last Window: Xymph. |
 | [Players](apps/players/README.md) | XAseco player commands: Xymph. RASP: Xymph and AssemblerManiac. |
 | [Dedimania Records](apps/records_dedimania/README.md) | Xymph, based on FAST. |
 | [Local Records](apps/records_local/README.md) | XAseco record commands: Xymph. RASP: Xymph and AssemblerManiac. |
-| [Ultimania Records](apps/records_ultimania/README.md) | askuri; original plugin copyright Martin Weber. |
 | [Sequential Info Messages](apps/seqinfomsg/README.md) | FuFi. |
 | [Server Info](apps/server_info/README.md) | XAseco information/update commands: Xymph. |
 | [Server Neighborhood](apps/server_neighborhood/README.md) | undef.de; contributors Milenco and .anDy. |
@@ -62,7 +61,7 @@ Original source and asset notices remain applicable.
 
 - XAseco's main source states GPLv2 or later. Several third-party plugins state
   GPLv3 or later.
-- Best CP Times and Ultimania have GPLv2-or-later source headers with GPLv3
+- Best CP Times has a GPLv2-or-later source header with GPLv3
   bundled COPYING files.
 - FlexiTime includes an MIT-style permission notice.
 - Stalker's Tools carries an "All rights reserved" notice.

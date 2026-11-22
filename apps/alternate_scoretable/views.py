@@ -50,7 +50,7 @@ def elapsed(seconds):
 def shell(title):
     parts = []
     append_window_start(parts, ml_window=ML_WINDOW, ml_subwin=ML_SUBWIN, title=title,
-                        icon_style='Icons128x128_1', icon_substyle='Rankings')
+                        icon_style='Icons128x128_1', icon_substyle='Rankings', single_backdrop=True)
     return parts
 
 
@@ -62,7 +62,7 @@ def button(values):
     return (f'<manialink id="{ML_BUTTON}"><frame posn="{values["button/pos_x"]} {values["button/pos_y"]} 0">'
             '<format textsize="1"/>'
             f'<quad posn="0 0 .001" sizen="{width:.4f} {height:.4f}"'
-            f' {_bg_attrs(cfg.bg_style, cfg.bg_substyle, cfg.bg_color)} action="{OPEN}"/>'
+            f' {_bg_attrs(cfg.bg_style, cfg.bg_substyle, cfg.bg_color)}/>'
             f'<quad posn="{_bar_x(cfg, .7):.4f} {_bar_y(cfg, -.3):.4f} .002"'
             f' sizen="{_bar_w(cfg, 3.35):.4f} {_bar_h(cfg, 3):.4f}" style="Icons128x128_1" substyle="Rankings"/>'
             f'<label posn="{center:.4f} {_bar_y(cfg, -3.4):.4f} .1"'
@@ -70,7 +70,7 @@ def button(values):
             f'<label posn="{center:.4f} {_bar_y(cfg, -4.9):.4f} .1"'
             f' sizen="{_bar_w(cfg, 6.35):.4f} {_bar_h(cfg, 2):.4f}" halign="center"'
             f' textcolor="{text(cfg.text_color)}" scale="{_bar_text_scale(cfg, .6)}" text="SCORES"/>'
-            f'<quad posn="0 0 .2" sizen="{width:.4f} {height:.4f}" bgcolor="0000" action="{OPEN}"/>'
+            f'<quad posn="0 0 .2" sizen="{width:.4f} {height:.4f}" bgcolor="FFFFFF01" bgcolorfocus="FFFFFF16" action="{OPEN}"/>'
             '</frame></manialink>')
 
 
@@ -112,9 +112,9 @@ def window(data, values, login, page=0, detail=None):
         start = page * values['entries']
         for index, row in enumerate(rows[start:start + values['entries']]):
             y, action = -5 - index * 1.85, PLAYER_BASE + start + index
-            parts.append(f'<quad posn=".3 {y + .2} .01" sizen="75.5 1.8" style="BgsPlayerCard" substyle="BgCardSystem"/>')
-            if row['login'] == login:
-                parts.append(f'<quad posn=".3 {y + .2} .02" sizen="75.5 1.8" style="BgsPlayerCard" substyle="BgMediaTracker" action="{action}"/>')
+            row_fill = (f'bgcolor="FFFFFF20" bgcolorfocus="FFFFFF36" action="{action}"'
+                        if row['login'] == login else 'bgcolor="FFFFFF0D"')
+            parts.append(f'<quad posn=".3 {y + .2} .01" sizen="75.5 1.8" {row_fill}/>')
             fields = {'rank': str(row['rank']) if row['rank'] > 0 else '-',
                 'name': row['name'] + (' [spec]' if row['spectator'] else '') + (' [left]' if not row['connected'] else ''),
                 'result': result(row, mode), 'pb': metric(row['pb'], mode), 'finishes': str(row['finishes']),

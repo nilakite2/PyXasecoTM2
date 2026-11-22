@@ -111,14 +111,11 @@ def register(aseco: "Aseco"):
 
 
 def _sec_to_time(ms: int, prefix: bool = False) -> str:
+    from pyxaseco.helpers import format_time_millis
     pre = ""
     if prefix:
         pre = "-" if ms < 0 else "+"
-    ms = abs(ms)
-    minutes = ms // 60000
-    seconds = (ms % 60000) // 1000
-    centis = (ms % 1000) // 10
-    return f"{pre}{minutes}:{seconds:02d}.{centis:02d}"
+    return pre + format_time_millis(abs(ms))
 
 
 def _sec_to_time_short(ms: int, prefix: bool = False) -> str:
@@ -127,8 +124,7 @@ def _sec_to_time_short(ms: int, prefix: bool = False) -> str:
         pre = "-" if ms < 0 else "+"
     ms = abs(ms)
     seconds = ms // 1000
-    centis = (ms % 1000) // 10
-    return f"{pre}{seconds}.{centis:02d}"
+    return f"{pre}{seconds}.{ms % 1000:03d}"
 
 
 async def _get_pool():
@@ -887,6 +883,16 @@ async def chat_secrecs_cleanupdb(aseco: "Aseco", command: dict) -> None:
         await _chat("> Database not available.")
         return
 
+    from pyxaseco.core.playlist import playlist
+    try:
+        tracks = await playlist(aseco).snapshot(refresh=True)
+        live_uids = {t.get("UId") or t.get("Uid", "") for t in tracks}
+        if not live_uids or "" in live_uids:
+            raise ValueError("Missing map UIDs")
+    except Exception:
+        await _chat("> Could not verify the complete server map list. No sector records were deleted.")
+        return
+
     total_removed = 0
 
     async with pool.acquire() as conn:
@@ -913,13 +919,6 @@ async def chat_secrecs_cleanupdb(aseco: "Aseco", command: dict) -> None:
             await cur.execute("DELETE FROM secrecs_all WHERE PlayerId NOT IN (SELECT Id FROM players)")
             await cur.execute("DELETE FROM secrecs_own WHERE PlayerId NOT IN (SELECT Id FROM players)")
             total_removed += faulty
-
-            try:
-                tracks = await aseco.client.query("GetChallengeList", 5000, 0) or []
-                live_uids = {t.get("UId") or t.get("Uid", "") for t in tracks}
-                live_uids.discard("")
-            except Exception:
-                live_uids = set()
 
             await cur.execute("SELECT Id, UId FROM challenges")
             old_removed = 0

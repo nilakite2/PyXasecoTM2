@@ -300,6 +300,8 @@ class _CPLive:
         self.pid_to_login.clear()
         self.spec_action_to_login.clear()
         self.payload_cache.clear()
+        # The module-level instance was created before register() loaded the saved layout.
+        self.cache_static_xml()
 
         await _update_track_info(self, aseco)
         await self.reset(aseco, hydrate_spec_status=True)
@@ -1293,6 +1295,9 @@ def _apply_app_defaults(aseco: "Aseco"):
         )
     except Exception:
         pass
+    if getattr(aseco, 'is_maniaplanet', False) and TOGGLE_KEY == 3:
+        # F7 opens the friends list; F8 belongs to the shared widget toggle.
+        _set_config('TOGGLE_KEY', 0)
 
 
 async def reload_cplive_runtime(aseco: "Aseco") -> None:

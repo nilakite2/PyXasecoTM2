@@ -32,7 +32,6 @@ disabled = [
 "app/pyxa_stats",
 "app/alternate_scoretable",
 "app/server_neighborhood",
-"app/records_ultimania",
 "app/records_wrmania",
 "app/dbtools",
 "app/serverstats",

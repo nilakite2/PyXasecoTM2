@@ -13,6 +13,7 @@ MAX_BYTES = 256 * 1024
 MAX_SERVERS = 100
 LOGIN = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,74}')
 SUFFIX = '_serverinfo.xml'
+MP_SUFFIX = '_maniaplanet.status.xml'
 
 
 def valid_login(value):
@@ -37,7 +38,11 @@ def owner(root):
     return hashlib.sha256(os.path.normcase(str(Path(root).resolve())).encode('utf-8')).hexdigest()
 
 
-def _read(path):
+def status_name(login, game):
+    return valid_login(login) + (MP_SUFFIX if game == 'TM2' else SUFFIX)
+
+
+def _read(path, game='TMF'):
     if path.is_symlink() or not path.is_file():
         raise ValueError('Status files must be regular files, not symbolic links.')
     with path.open('rb') as stream:
@@ -48,7 +53,7 @@ def _read(path):
     root = ET.fromstring(raw)
     if root.tag != 'server_neighborhood':
         raise ValueError('Unexpected status XML root.')
-    if root.findtext('server/game', 'TMF') != 'TMF':
+    if root.findtext('server/game', 'TMF') != game:
         raise ValueError('Status belongs to a different game.')
     return root
 
@@ -60,8 +65,8 @@ def _count(value):
     return number
 
 
-def read(path, login):
-    root = _read(path)
+def read(path, login, game='TMF'):
+    root = _read(path, game)
     if root.findtext('server/login') != login:
         raise ValueError('Status filename and server login disagree.')
     def text(key, default='', limit=160):
@@ -70,6 +75,7 @@ def read(path, login):
     if not 0 <= stamp < 1e12:
         raise ValueError('Invalid status timestamp.')
     return {'login': login, 'name': text('server/name', login), 'updated': stamp,
+            'game': game, 'title_id': text('server/title_id', '', 160),
             'online': text('server/online', 'true').lower() == 'true',
             'mode': int(text('server/gamemode', '-1')), 'pack': text('server/packmask', '', 30),
             'players': _count(text('server/players/current', '0')),
@@ -85,16 +91,18 @@ def write(folder, data, publisher):
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
     if folder.is_symlink():
         raise ValueError('Status directory may not be a symbolic link.')
-    target = folder / (login + SUFFIX)
+    game = data.get('game', 'TMF')
+    target = folder / status_name(login, game)
     replacing = target.exists() or target.is_symlink()
     if replacing:
-        previous = _read(target)
+        previous = _read(target, game)
         if previous.get('pyxaseco_owner') != publisher or previous.findtext('server/login') != login:
             raise ValueError('Another installation owns this server status filename; nothing was overwritten.')
     root = ET.Element('server_neighborhood', pyxaseco_owner=publisher)
     server = ET.SubElement(root, 'server')
     for key, value in (('login', login), ('name', data['name']), ('last_modified', data['updated']),
-                       ('online', str(data['online']).lower()), ('game', 'TMF'),
+                       ('online', str(data['online']).lower()), ('game', game),
+                       ('title_id', data.get('title_id', '')),
                        ('gamemode', data['mode']), ('packmask', data['pack'])):
         ET.SubElement(server, key).text = str(value)
     for name, current, maximum in (('players', data['players'], data['maxplayers']),
@@ -120,6 +128,8 @@ def write(folder, data, publisher):
             os.fsync(stream.fileno())
         if replacing:
             os.replace(temporary, target)
+        elif os.name == 'nt':
+            os.rename(temporary, target)  # Windows rename fails if the destination exists.
         else:
             # Exclusive first publication: two controllers cannot claim the same login.
             os.link(temporary, target)
@@ -127,14 +137,15 @@ def write(folder, data, publisher):
         temporary.unlink(missing_ok=True)
 
 
-def scan(folder, logins=()):
+def scan(folder, logins=(), *, game='TMF'):
     if folder.is_symlink():
         raise ValueError('Unsafe status directory.')
     names = list(logins)
     if not names and folder.exists():
         names = []
-        for path in folder.glob('*' + SUFFIX):
-            login = path.name[:-len(SUFFIX)]
+        suffix = MP_SUFFIX if game == 'TM2' else SUFFIX
+        for path in folder.glob('*' + suffix):
+            login = path.name[:-len(suffix)]
             if LOGIN.fullmatch(login):
                 names.append(login)
             if len(names) > MAX_SERVERS:
@@ -143,10 +154,10 @@ def scan(folder, logins=()):
     rows, errors = [], []
     for login in names:
         try:
-            rows.append(read(folder / (valid_login(login) + SUFFIX), login))
+            rows.append(read(folder / status_name(login, game), login, game))
         except (OSError, ValueError, ET.ParseError) as error:
             errors.append(login + ': ' + str(error))
-            rows.append({'login': login, 'name': login, 'updated': 0, 'online': False,
+            rows.append({'login': login, 'name': login, 'updated': 0, 'online': False, 'game': game,
                          'players': 0, 'maxplayers': 0, 'spectators': 0, 'maxspectators': 0,
                          'mode': -1, 'pack': '', 'map': '', 'author': '', 'environment': ''})
     return rows, errors

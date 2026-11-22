@@ -151,11 +151,12 @@ class FastUiApp(App):
             ('onStatusChangeTo3', self.refresh), ('onStatusChangeTo5', self.refresh),
             ('onLocalRecord', self.refresh), ('onDediRecsLoaded', self.refresh),
             ('onTrialRecordsLoaded', self.refresh), ('onRpgRecordsLoaded', self.refresh),
-            ('onWRManiaRecordsLoaded', self.refresh), ('onUltimaniaRecordsLoaded', self.refresh),
+            ('onWRManiaRecordsLoaded', self.refresh),
             (competition.EVENT, self.refresh),
         ):
             aseco.register_event(event, callback)
-        self.competition.register(aseco)
+        if not getattr(aseco, 'is_maniaplanet', False):
+            self.competition.register(aseco)
 
     async def configure(self, aseco):
         bound = await file_io(bind_app_settings, SCHEMA, aseco._base_dir)
@@ -173,7 +174,8 @@ class FastUiApp(App):
         self.menus.clear()
         self.menu_actions.clear()
         self.comparisons.clear()
-        await self.competition.configure(aseco, values)
+        if not getattr(aseco, 'is_maniaplanet', False):
+            await self.competition.configure(aseco, values)
         for player in list(aseco.server.players.all()):
             if (before.get(player.login) != styles.resolve(player) or
                     (components_changed and self.active(aseco, player))):
@@ -471,7 +473,7 @@ class FastUiApp(App):
             self.menus[player.login] = ('0000', 0)
             await self.refresh(aseco)
         else:
-            await aseco.get_service('ui/uistyle').reply(player, 'Select FAST using /uistyle list and show widgets with F7.')
+            await aseco.get_service('ui/uistyle').reply(player, 'Select FAST using /uistyle list and show widgets with F8.')
 
     async def answer(self, aseco, answer):
         if len(answer) < 3:

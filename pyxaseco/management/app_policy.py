@@ -1,5 +1,7 @@
 """App-management capabilities shared with the optional in-game manager."""
 
+RETIRED_STANDALONE_APPS = frozenset({'records_ultimania'})
+
 MANAGEABLE_STANDALONE_APPS = {
     'ui_fast': 'FAST UI',
     'sponsor_banner': 'Sponsor Banner',
@@ -12,7 +14,6 @@ MANAGEABLE_STANDALONE_APPS = {
     'bestruns': 'Best Runs', 'bestfinishes': 'Best Finishes',
     'best_cp_times': 'Best CP Times', 'records_rpg': 'RPG Records',
     'records_dedimania': 'Dedimania Records',
-    'records_ultimania': 'Ultimania Records',
     'records_wrmania': 'Mania Records',
     'records_trial': 'Trial Records', 'jfreu': 'JFreu', 'ztrack': 'ZTrack',
     'endlesstmxr': 'Endless TMX Random',
@@ -36,7 +37,6 @@ RELOADABLE_APPS = {
     'pyxa_stats',
     'alternate_scoretable',
     'server_neighborhood',
-    'records_ultimania',
     'records_wrmania',
     'ui', 'bestcps', 'bestsecs', 'bestruns', 'bestfinishes', 'best_cp_times',
     'checkpoint_tools', 'flexitime', 'endlesstmxr',

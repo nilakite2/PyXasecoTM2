@@ -43,8 +43,12 @@ def map_data(challenge, mode):
             'authorTimeMs': int(challenge.authortime), 'nbCheckpoints': int(challenge.nbchecks)}
 
 
-def fingerprint(track):
-    fields = ['TMF', track['uid'], track['author'], track['environment'],
+def game_for(aseco):
+    return 'TM2' if getattr(aseco, 'is_maniaplanet', False) else 'TMF'
+
+
+def fingerprint(track, game='TMF'):
+    fields = [game, track['uid'], track['author'], track['environment'],
               track['authorTimeMs'], track['nbCheckpoints']]
     return hashlib.sha256(json.dumps(fields, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
 
@@ -83,6 +87,7 @@ def records(payload, limit=30):
 class Client:
     def __init__(self, aseco, values):
         self.aseco, self.values = aseco, dict(values)
+        self.game = game_for(aseco)
         self.base = base_url(values['api_base'])
         self.token, self.expires = '', 0
         self._limit, self.limit_revision = 30, -1
@@ -106,7 +111,8 @@ class Client:
 
     async def request(self, method, path, payload=None, *, auth=True):
         session = self.aseco.jobs.http.get(OWNER, HttpPolicy())
-        headers = {'Accept': 'application/json', 'User-Agent': 'PyXaseco-WRMania/1.5'}
+        product = 'PyXasecoMP' if self.game == 'TM2' else 'PyXaseco'
+        headers = {'Accept': 'application/json', 'User-Agent': product + '-WRMania/1.5'}
         if auth and self.authenticated:
             headers['Authorization'] = 'Bearer ' + self.token
         kwargs = {'headers': headers, 'timeout': request_timeout(self.values['request_timeout']),
@@ -131,9 +137,9 @@ class Client:
             if self.authenticated and monotonic() < self.expires - 120:
                 return
             proof = hmac.new(self.values['server_password'].encode(),
-                ('WRMania-v1|TMF|' + self.values['server_login']).encode(), hashlib.sha256).hexdigest()
+                f"WRMania-v1|{self.game}|{self.values['server_login']}".encode(), hashlib.sha256).hexdigest()
             data = await self.request('POST', '/api/v1/servers/authenticate',
-                {'game': 'TMF', 'login': self.values['server_login'],
+                {'game': self.game, 'login': self.values['server_login'],
                  'credentialProof': proof, 'nation': self.values['nation']}, auth=False)
             token, duration = data.get('token'), data.get('expiresInSeconds')
             if (not isinstance(token, str) or not token.startswith('wrms_')
@@ -143,17 +149,19 @@ class Client:
             self.update_limit(data)
 
     async def get_records(self, track, mode):
-        query = urlencode({'game': 'TMF', 'uid': track['uid'], 'mode': mode,
-                           'fingerprint': fingerprint(track), 'limit': 40})
+        query = urlencode({'game': self.game, 'uid': track['uid'], 'mode': mode,
+                           'fingerprint': fingerprint(track, self.game), 'limit': 40})
         data = await self.request('GET', '/api/v1/records?' + query)
         return records(data.get('records'), self.limit)
 
     async def submit(self, submission):
+        if submission.get('game') != self.game:
+            raise ValueError('WRMania submission belongs to another game.')
         return await self.request('POST', '/api/v1/runs', submission)
 
     async def heartbeat(self, uid, players, name=''):
         payload = {
-            'game': 'TMF', 'serverLogin': self.values['server_login'],
+            'game': self.game, 'serverLogin': self.values['server_login'],
             'pluginVersion': '1.5.0', 'mapUid': uid, 'players': players}
         if name:
             payload['serverName'] = ''.join(' ' if ord(char) < 32 or ord(char) == 127 else char

@@ -66,7 +66,7 @@ def _build_help_window(aseco: 'Aseco', page: int = 0) -> str:
             ('/eyepiece',               'Display this help window'),
             ('/eyepiece hide',          'Hide the record widgets (stored in session)'),
             ('/eyepiece show',          'Show the record widgets (stored in session)'),
-            ('/togglewidgets  or  F7',  'Toggle display of all record widgets'),
+            ('/togglewidgets  or  F8',  'Toggle display of all record widgets'),
             ('/estat dedirecs',         'Show Dedimania records window'),
             ('/estat localrecs',        'Show local records window'),
             ('/estat topranks',         'Top-ranked players'),

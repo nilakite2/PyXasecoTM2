@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from xml.sax.saxutils import escape as _esc
 
+from pyxaseco.maniaplanet_ui import SINGLE_CARD_COLOR
+
 DEFAULT_BACKDROP = ''
 DEFAULT_FRAME_OPEN = '<frame posn="-40.1 30.45 18.50">'
 DEFAULT_INNER_BG = '<quad posn="0.8 -0.8 0.01" sizen="78.4 53.7" bgcolor="3336"/>'
@@ -27,14 +29,17 @@ def append_window_start(p: list[str], *, ml_window: int, ml_subwin: int, title: 
                         title_pos: str = '5.5 -1.9 0.04',
                         title_size: str = '74 0',
                         title_scale: str = '0.9',
-                        title_textsize: str = '2') -> None:
+                        title_textsize: str = '2', single_backdrop: bool = False) -> None:
     p.append(f'<manialink id="{ml_subwin}"></manialink>')
     p.append(f'<manialink id="{ml_window}">')
     p.append(DEFAULT_BACKDROP)
     p.append(DEFAULT_FRAME_OPEN)
-    p.append(DEFAULT_INNER_BG)
-    p.append(DEFAULT_INNER_BG)
-    p.append(DEFAULT_CARD_BG)
+    if single_backdrop:
+        p.append(f'<quad posn="-0.2 0.2 0" sizen="80.4 55.7" bgcolor="{SINGLE_CARD_COLOR}"/>')
+    else:
+        p.append(DEFAULT_INNER_BG)
+        p.append(DEFAULT_INNER_BG)
+        p.append(DEFAULT_CARD_BG)
     p.append(DEFAULT_TITLE_BG)
     p.append(DEFAULT_SEPARATOR)
     p.append(f'<quad posn="1.8 -1 0.04" sizen="3.2 3.2" style="{_escape(icon_style)}" substyle="{_escape(icon_substyle)}"/>')

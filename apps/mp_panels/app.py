@@ -4,8 +4,9 @@ import xml.etree.ElementTree as ET
 from collections import defaultdict
 
 from pyxaseco.core.widget_delivery import deliver_ui
-from pyxaseco.helpers import clean_tm_text
+from pyxaseco.helpers import clean_tm_text, format_widget_time
 from pyxaseco.maniaplanet_ui import CARD, TITLE, label, quad
+from pyxaseco.models import Gameinfo
 
 
 APP_METADATA = {
@@ -48,6 +49,7 @@ def _track_panel(root, aseco, course, page=TRACK_ID):
 
 def _records_panel(root, aseco, login, page=RECORDS_ID):
     records = aseco.server.records
+    stunts = aseco.server.gameinfo.mode == Gameinfo.STNT
     count = min(records.count(), ROW_LIMIT)
     body_height = max(1, count) * ROW_HEIGHT
     frame = _panel(root, page, 44, 6.7 + body_height, 'Local Records', RECORDS_ACTION,
@@ -66,7 +68,8 @@ def _records_panel(root, aseco, login, page=RECORDS_ID):
         nick = clean_tm_text(record.player.nickname) or record.player.login
         time_color = '33FF55FF' if own else ('FFFF00FF' if index < 3 else 'CCCCCCFF')
         label(frame, 5.75, y, 4, ROW_HEIGHT, f'{index + 1}.', halign='right', valign='center2', scale='0.85')
-        label(frame, 6, y, 9.7, ROW_HEIGHT, '$n' + aseco.format_time(record.score),
+        time = str(record.score) if stunts else format_widget_time(record.score)
+        label(frame, 6, y, 9.7, ROW_HEIGHT, '$n' + time,
               valign='center2', scale='0.82', textcolor=time_color)
         label(frame, 16.15, y, WIDTH - 17.5, ROW_HEIGHT, nick, valign='center2', scale='0.9')
     if not count:

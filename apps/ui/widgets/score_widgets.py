@@ -20,7 +20,7 @@ import logging
 from typing import TYPE_CHECKING
 from xml.sax.saxutils import escape
 
-from pyxaseco.helpers import format_time
+from pyxaseco.helpers import format_time, format_widget_time
 from pyxaseco.app_services import trial_records_snapshot
 from pyxaseco.models import Gameinfo
 from apps.platform_ui.presentation import FIXED_HEIGHT
@@ -179,6 +179,7 @@ def build_local_records_for_score(aseco: 'Aseco') -> str:
     entries= int(cfg.get('entries', 8))
     fmt    = getattr(_state.style, 'score_fmt_codes', '')
     sc     = getattr(_state.style, 'score_col_scores', 'DDDF')
+    formatter = format_widget_time if getattr(aseco, 'is_maniaplanet', False) else format_time
 
     # Collect records from server
     records = []
@@ -191,7 +192,7 @@ def build_local_records_for_score(aseco: 'Aseco') -> str:
                 continue
             score = getattr(rec, 'score', 0) or 0
             nick  = getattr(getattr(rec, 'player', None), 'nickname', '?') or '?'
-            score_text = str(int(score)) if is_stnt else aseco.format_time(int(score)) if getattr(aseco, 'is_maniaplanet', False) else format_time(int(score))
+            score_text = str(int(score)) if is_stnt else formatter(int(score))
             records.append((i + 1, score_text, nick))
     except Exception as e:
         logger.debug('[RE] LocalRecordsForScore: %s', e)
@@ -244,13 +245,9 @@ def build_dedi_records_for_score(aseco: 'Aseco') -> str:
             rpg_track = None
             rpg_rows = []
 
-        ulti = aseco.services.get('service/records_ultimania') if 'records_ultimania' in getattr(aseco, 'active_apps', ()) else None
         mania = aseco.services.get('service/records_wrmania') if 'records_wrmania' in getattr(aseco, 'active_apps', ()) else None
         trial_track, trial_rows = trial_records_snapshot(aseco)
-        if ulti is not None and ulti.active(aseco):
-            score_cfg['title'] = 'Ultimania Records'
-            source_rows = ulti.rows
-        elif trial_track is not None:
+        if trial_track is not None:
             from .trial_records import _trial_title
             score_cfg['title'] = _trial_title(trial_track.get('points'))
             source_rows = trial_rows
@@ -265,6 +262,8 @@ def build_dedi_records_for_score(aseco: 'Aseco') -> str:
 
         ranked_provider = source_rows is trial_rows or source_rows is rpg_rows
         mp = getattr(aseco, 'is_maniaplanet', False)
+        stunts = _effective_mode(aseco) == Gameinfo.STNT
+        formatter = format_widget_time if mp else format_time
         for i, rec in enumerate(source_rows):
             if not isinstance(rec, dict):
                 continue
@@ -278,14 +277,14 @@ def build_dedi_records_for_score(aseco: 'Aseco') -> str:
                 or '?'
             )
             score_text = str(rec.get('score_text') or '')
-            if not score_text or (ranked_provider and mp):
+            if not score_text or (mp and not stunts):
                 raw = rec.get('best_score') or rec.get('Best') or rec.get('Score') or rec.get('score')
                 try:
                     best = int(raw or 0)
                 except (TypeError, ValueError, OverflowError):
                     best = 0
                 if best > 0:
-                    score_text = aseco.format_time(best) if mp else format_time(best)
+                    score_text = str(best) if stunts else formatter(best)
             if not score_text:
                 continue
             rank = record_rank(rec, i + 1) if ranked_provider else i + 1
@@ -350,7 +349,7 @@ def build_avg_times_for_score(aseco: 'Aseco') -> str:
     widget_height = float(cfg.get('height', 0.0) or (lh * min(len(data), entries) + 3.3))
     p = [_scoretable_header(ML_AVG_TIMES, cfg, widget_height)]
     name_width = max(float(cfg.get('width', 15.5) or 15.5) - 5.3, 2.0)
-    formatter = aseco.format_time if getattr(aseco, 'is_maniaplanet', False) else format_time
+    formatter = format_widget_time if getattr(aseco, 'is_maniaplanet', False) else format_time
     records = [(idx + 1, str(item['score']) if is_stnt else formatter(item['score']), item['nickname'])
                for idx, item in enumerate(data[:entries])]
     columns = _record_columns(aseco, cfg, records)
@@ -771,7 +770,7 @@ def build_round_score_widget(aseco: 'Aseco', *, mode=None, sample=None) -> str:
             # Rank, score, name
             if getattr(aseco, 'is_maniaplanet', False):
                 if mode != Gameinfo.STNT and type(item.get('score_plain')) is int:
-                    score_txt = aseco.format_time(item['score_plain'])
+                    score_txt = format_widget_time(item['score_plain'])
                 columns = record_columns(width, [f'{line + 1}.'], [score_txt])
                 p.append(_scoretable_row(line, line + 1, score_txt, nick, textcolor, fmt, lh,
                                          columns=columns, depth=.004))

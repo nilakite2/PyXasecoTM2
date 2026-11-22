@@ -13,10 +13,13 @@ No direct chat command. `/server` shows the enabled integration's health.
 
 `app/pyxa_stats` is enabled in the shipped MP loadout. For an existing custom
 loadout, enable it in `apps.mp.toml` and remove it from the disabled list.
-Set `PYXASECOMP_STATS_API_BASE` to your website's HTTPS origin (no `/api` suffix).
+The shipped `.env.example` sets `PYXASECOMP_STATS_API_BASE` to
+`https://tmtrialgy.com`. If you use that setting, PYXA Stats publishes server
+snapshots and recent local records there. Leave the value blank to disable
+publishing, or set it to your own website's HTTPS origin (no `/api` suffix).
 `PYXASECOMP_STATS_API_TOKEN` is optional, just as in TMF: leave it blank when the
 website does not require a token. If the website has `PUBLIC_STATS_WRITE_TOKEN`
-configured, use that value. No destination/token is preconfigured.
+configured, use that value. No token is preconfigured.
 Use `app_defaults.toml` or `//apps config pyxa_stats` for publishing,
 heartbeat timing and the number of recent records.
 
@@ -24,11 +27,11 @@ The MP bridge deliberately does not reuse TMF stats credentials from generic
 environment variables. These settings authorize only the stats receiver; never
 use your dedicated SuperAdmin, masterserver or database password here.
 
-For dedicated login `nila_dev`, the website reporting key is `mp4-nila_dev`.
+For example, dedicated login `your_server` has the reporting key `mp4-your_server`.
 The bridge also sends the actual login, `platform=MP4`, and the active title ID.
 The website uses the real login/title for ManiaPlanet links, and the reporting
-key for lookups/events so TMF `nila_dev` remains a separate server. For MP event
-rotation use `mp4-nila_dev` in the website's event server-login field.
+key for lookups and events so a TMF server with the same login stays separate.
+Use the MP reporting key in the website's event server-login field.
 
 ## Changes And Limits
 

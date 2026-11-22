@@ -192,7 +192,10 @@ class RuntimeManagement:
         if kind == 'app.state':
             app_id, enabled, expected = payload.get('app'), payload.get('enabled'), payload.get('revision')
             if not isinstance(app_id, str) or not isinstance(expected, str) or not re.fullmatch(r'[0-9a-f]{64}', expected):
-                raise ManagementError('Supply an app and apps.toml revision')
+                raise ManagementError('Supply an app and ' + self.operations.loadout_file + ' revision')
+            supports = getattr(self.aseco, 'supports_app', None)
+            if enabled is True and callable(supports) and not supports(app_id):
+                raise ManagementError('This app is not supported by the running controller')
             saved = self.operations._save_app_state(app_id, enabled, expected=expected)
             return {**asdict(saved), 'saved': True, 'restart_required': True, 'runtime_applied': False}
         raise ManagementError('Unsupported filesystem operation')

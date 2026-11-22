@@ -12,6 +12,7 @@ import zipfile
 
 from pyxaseco import PRODUCT_NAME
 
+from .app_policy import RETIRED_STANDALONE_APPS
 from .config_backup import backup_app_defaults
 from .config_store import ManagementError, instance_lock, maintenance_area, revision
 from .credentials import protect_token
@@ -39,7 +40,7 @@ class FileUpdates:
         from .release_manifest import PUBLIC_APPS, package_path, version, FILE_LIMIT
         import re
         for identity, entry in data['packages'].items():
-            if identity != 'controller' and identity not in PUBLIC_APPS:
+            if identity != 'controller' and identity not in PUBLIC_APPS | RETIRED_STANDALONE_APPS:
                 raise ManagementError('Unknown package in local update history')
             if not isinstance(entry, dict) or not isinstance(entry.get('files'), dict) or len(entry['files']) > 4096:
                 raise ManagementError('Invalid local update inventory')
@@ -53,7 +54,7 @@ class FileUpdates:
                     raise ManagementError('Invalid local update checksum')
         return data, raw
 
-    def _selected(self, package, files):
+    def _selected(self, package, files, *, incoming=False):
         if package['kind'] != 'controller' or not package.get('filename'):
             return files
         from .app_policy import MANAGEABLE_STANDALONE_APPS
@@ -61,11 +62,12 @@ class FileUpdates:
                      if safe_path(self.root / 'apps' / app / 'app.py').is_file()}
         return {name: data for name, data in files.items()
                 if not name.startswith('apps/server_admin_bridge/')
+                and not (incoming and name.startswith('apps/') and name.split('/')[1] in RETIRED_STANDALONE_APPS)
                 and (not (name.startswith('apps/') and name.split('/')[1] in MANAGEABLE_STANDALONE_APPS)
                      or name.split('/')[1] in installed)}
 
     def matches_release(self, package, previous):
-        selected = self._selected(package, package['files'])
+        selected = self._selected(package, package['files'], incoming=True)
         names = selected.keys() | self._selected(package, previous).keys()
         return all(_hash(_bytes(self.root / name)) == selected.get(name, {}).get('sha256')
                    for name in sorted(names) if not configuration_file(name))
@@ -104,7 +106,7 @@ class FileUpdates:
                         raise ManagementError('Invalid TOML configuration in release: ' + name) from error
         ledger, raw = self._ledger()
         previous = self._previous(package, ledger)
-        selected = self._selected(package, package['files'])
+        selected = self._selected(package, package['files'], incoming=True)
         rows, snapshots = [], {self.ledger: _hash(raw)}
         for name in sorted(set(selected) | set(previous)):
             # Only paths authenticated by a package inventory may be considered.
@@ -213,6 +215,8 @@ class FileUpdates:
                                                 'files': inventory}
             if package['kind'] == 'controller' and package.get('filename'):
                 from .app_policy import MANAGEABLE_STANDALONE_APPS
+                for retired in RETIRED_STANDALONE_APPS:
+                    ledger['packages'].pop(retired, None)
                 for app in MANAGEABLE_STANDALONE_APPS:
                     files = {name: item for name, item in inventory.items() if name.startswith('apps/' + app + '/')}
                     if files:

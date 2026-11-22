@@ -2,7 +2,7 @@
 
 import re
 
-from pyxaseco.helpers import format_time, safe_manialink_text
+from pyxaseco.helpers import format_time, format_widget_time, safe_manialink_text
 
 
 ML_BAR, ML_MAP, ML_RECORDS, ML_MENU = range(8585000, 8585004)
@@ -138,7 +138,7 @@ def records(values, source, rows, login, position, total, *, stunts=False):
             body += f'<quad posn="0.1 {y + .2:.4f} 0.01" sizen="{width - .2:.4f} {step:.4f}" bgcolor="09F4"/>'
         body += label(.4, y, 2.5, str(row['rank']) + '.', color='FF0F')
         body += label(3.0, y, width - 9.4, row['nickname'])
-        score = str(row['score']) if stunts else format_time(row['score'])
+        score = str(row['score']) if stunts else format_widget_time(row['score'])
         body += label(width - .4, y, 6.0, score, align='right')
     if not rows:
         body += label(.5, -2.4, width - 1, '$aaaNo records yet')

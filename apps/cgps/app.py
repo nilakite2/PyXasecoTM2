@@ -52,10 +52,9 @@ def validate_link(link):
     return link
 
 
-def chat_link(link):
-    # TMF requires HTTP; use the same URL for display and new database writes.
+def chat_link(link, *, maniaplanet=False):
     validate_link(link)
-    return 'http://' + link.split('://', 1)[1]
+    return link if maniaplanet else 'http://' + link.split('://', 1)[1]
 
 
 def validate_config(document, _root):
@@ -72,6 +71,7 @@ class CuratedGpsApp(App):
                          description=APP_METADATA['description'], depends_on=('platform_core',),
                          entry_modules=('app/cgps',), settings_schema=SCHEMA)
         self.enabled = False
+        self.mp = False
         self.values = {}
         self.widget = {}
         self.schema_pool = None
@@ -97,6 +97,10 @@ class CuratedGpsApp(App):
         self.widget = widget if isinstance(widget, dict) else {}
         self.values = bound.values
         self.enabled = bound.values['enabled']
+        self.mp = bool(getattr(aseco, 'is_maniaplanet', False))
+
+    def link(self, url):
+        return chat_link(url, maniaplanet=self.mp)
 
     async def pool(self, aseco):
         pool = await localdb_get_pool(aseco)
@@ -159,7 +163,7 @@ class CuratedGpsApp(App):
                     await self.reply(aseco, player, '{#message}No maps found.')
                     return
                 table = [[str(row['Id']), row['Name'], row['Uid'],
-                          f'$l[{chat_link(row["Link"])}]GPS$l' if row['Link'] else 'No GPS'] for row in rows]
+                          f'$l[{self.link(row["Link"])}]GPS$l' if row['Link'] else 'No GPS'] for row in rows]
                 player.msgs = [[1, 'Curated GPS - Local Map IDs', [1.7, .12, .65, .68, .25],
                                 ['Icons64x64_1', 'Camera']]]
                 player.msgs.extend([[['ID', 'Track', 'UID', 'GPS']] + table[i:i + 14]
@@ -171,7 +175,7 @@ class CuratedGpsApp(App):
                 if not uid:
                     raise ManagementError('No current track is available')
                 link = await storage.current_link(await self.pool(aseco), uid)
-                text = ('{#message}Current track GPS: $l[' + chat_link(link) + ']Watch GPS$l'
+                text = ('{#message}Current track GPS: $l[' + self.link(link) + ']Watch GPS$l'
                         if link else '{#message}No GPS found for current track!')
                 await self.reply(aseco, player, text)
                 return
@@ -188,12 +192,12 @@ class CuratedGpsApp(App):
                 if not map_id:
                     raise ManagementError('No current track is available')
                 track_name = str(getattr(challenge, 'name', '') or '')
-                link = chat_link(parts[1]) if len(parts) == 2 else None
+                link = self.link(parts[1]) if len(parts) == 2 else None
             else:
                 map_id, track_name = parts[1], None
                 if action != 'rem' and len(parts) != 3:
                     raise ManagementError(USAGE)
-                link = chat_link(parts[2]) if len(parts) == 3 else None
+                link = self.link(parts[2]) if len(parts) == 3 else None
             async with self.lock:
                 pool = await self.pool(aseco)
                 if current:
@@ -215,7 +219,7 @@ class CuratedGpsApp(App):
             return
         try:
             link = await storage.current_link(await self.pool(aseco), uid)
-            link = chat_link(link) if link else None
+            link = self.link(link) if link else None
         except (aiomysql.Error, OSError, ValueError, TypeError) as error:
             self.widget_uid = ''  # Retry on the next redraw rather than caching an outage.
             logger.warning('[CuratedGPS] Widget link unavailable: %s', error)
@@ -231,7 +235,7 @@ class CuratedGpsApp(App):
             return escape(str(cfg.get(name, default)), {'"': '&quot;'})
         background = (f'bgcolor="{attr("background_color", "")}"' if cfg.get('background_color') else
                       f'style="{attr("background_style", "BgsPlayerCard")}" substyle="{attr("background_substyle", "ProgressBar")}"')
-        target = f' url={quoteattr(chat_link(link))}' if link else ''
+        target = f' url={quoteattr(self.link(link))}' if link else ''
         caption = 'GPS' if link else 'NO GPS'
         return (f'<manialink id="{ML_ID}"><frame posn="{values["widget/pos_x"]} {values["widget/pos_y"]} 0">'
                 f'<format textsize="1"/><quad posn="0 0 0.001" sizen="{width} {height}" {background}/>'

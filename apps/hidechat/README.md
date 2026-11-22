@@ -15,7 +15,7 @@ All players can select their own mode; administrator chat restrictions still app
   spectating, round end, map changes and the scoreboard.
 - `/chat` or `/chat help`: show usage and the selected mode.
 - The small close-style button cycles **On -> Auto -> Off -> On** and remains
-  available when chat is hidden. F7 hides the button; commands still work.
+  available when chat is hidden. F8 hides the button; commands still work.
 - The FuFi HUD menu receives a Chat submenu when Hide Chat is enabled at menu load.
 
 ## Configuration

@@ -4,16 +4,19 @@ from collections import OrderedDict
 import json
 import logging
 import os
+from pathlib import Path
 import re
 from time import monotonic
 from uuid import uuid4
 
 from pyxaseco.app_config import AppSetting, AppSettingsSchema, as_bool, as_int, as_str, bind_app_settings
 from pyxaseco.core.background_jobs import Admission, JobEnvelope, JobPolicy
+from pyxaseco.core.file_io import file_io
 from pyxaseco.core.retained_delivery import delivery, PreparationDeferred, PreparationRejected
 from pyxaseco.helpers import format_time, strip_colors, is_lan_login
 
-from .api import ApiError, Client, MODES, base_url, map_data, valid_checks
+from .api import ApiError, Client, MODES, base_url, game_for, map_data, valid_checks
+from .credentials import dedicated_password, mp_overrides, nation_code
 
 
 logger = logging.getLogger(__name__)
@@ -27,15 +30,15 @@ QUIET_POLL_FAILURES = frozenset({
 SCHEMA = AppSettingsSchema(app_id='records_wrmania', settings=(
     AppSetting('enabled', True, as_bool, 'Enable Mania Records.'),
     AppSetting('api_base', 'https://api.wrmania.net', as_str, 'WRMania HTTPS API origin.'),
-    AppSetting('server_login', '', as_str, 'Blank reuses DEDI_LOGIN, then the connected dedicated-server login.'),
-    AppSetting('server_password', '', as_str, 'Blank reuses DEDI_PASSWORD; WRMANIA_SERVER_PASSWORD overrides this field.'),
-    AppSetting('nation', '', as_str, 'Three-letter dedicated-server nation; blank reuses DEDI_NATION.'),
+    AppSetting('server_login', '', as_str, 'Blank uses the connected dedicated-server login on MP.'),
+    AppSetting('server_password', '', as_str, 'Dedicated-server account password; prefer the WRMania environment setting.'),
+    AppSetting('nation', '', as_str, 'Three-letter dedicated-server nation.'),
     AppSetting('request_timeout', 30, as_int, 'Request deadline, 1-60 seconds.'),
     AppSetting('refresh_interval', 45, as_int, 'Refresh interval, 15-3600 seconds.'),
     AppSetting('heartbeat_interval', 240, as_int, 'Server heartbeat interval, 30-240 seconds; independent of records.'),
     AppSetting('submit_records', True, as_bool, 'Submit validated improvements even while another widget is visible.'),
     AppSetting('widget_enabled', True, as_bool, 'Show Mania Records in the shared external-record slot.'),
-    AppSetting('prefer_widget', False, as_bool, 'Prefer Mania Records over Dedimania, never RPG/Trial/Ultimania.'),
+    AppSetting('prefer_widget', False, as_bool, 'Prefer Mania Records over Dedimania, never RPG/Trial.'),
     AppSetting('show_record_messages', True, as_bool, 'Announce confirmed new/improved records when chat priority permits.'),
     AppSetting('show_map_messages', True, as_bool, 'Announce the map leaderboard once when chat priority permits.'),
     AppSetting('announce_when_hidden', False, as_bool, 'Allow enabled announcements even while another provider owns the widget.'),
@@ -103,13 +106,18 @@ class Runtime:
         if (not 15 <= values['refresh_interval'] <= 3600 or not 1 <= values['request_timeout'] <= 60
                 or not 30 <= values['heartbeat_interval'] <= 240):
             raise ValueError('Invalid Mania Records refresh/heartbeat interval or timeout.')
-        dedi_login = os.getenv('DEDI_LOGIN', '')
-        values['server_login'] = values['server_login'] or dedi_login
-        values['server_password'] = os.getenv('WRMANIA_SERVER_PASSWORD') or values['server_password']
-        # Do not borrow another server account's password when login is overridden.
-        if not values['server_password'] and (not dedi_login or values['server_login'] == dedi_login):
-            values['server_password'] = os.getenv('DEDI_PASSWORD', '')
-        values['nation'] = (values['nation'] or os.getenv('DEDI_NATION', '')).strip().upper()
+        if game_for(aseco) == 'TM2':
+            values.update(mp_overrides(Path(getattr(aseco, '_base_dir', '.')), values))
+            values['server_login'] = values['server_login'].strip()
+            values['nation'] = values['nation'].strip().upper()
+        else:
+            dedi_login = os.getenv('DEDI_LOGIN', '')
+            values['server_login'] = values['server_login'] or dedi_login
+            values['server_password'] = os.getenv('WRMANIA_SERVER_PASSWORD') or values['server_password']
+            # Do not borrow another server account's password when login is overridden.
+            if not values['server_password'] and (not dedi_login or values['server_login'] == dedi_login):
+                values['server_password'] = os.getenv('DEDI_PASSWORD', '')
+            values['nation'] = (values['nation'] or os.getenv('DEDI_NATION', '')).strip().upper()
         self.values, self.enabled = values, values['enabled']
         self.client = None
         self.available = False
@@ -130,17 +138,13 @@ class Runtime:
         if any(app in active and getattr(aseco.server, flag, False) for app, flag in (
                 ('records_rpg', 'rpg_records_active'), ('records_trial', 'trial_records_active'))):
             return False
-        ulti = aseco.services.get('service/records_ultimania') if 'records_ultimania' in active else None
-        if ulti is not None and ulti.active(aseco):
-            return False
         return self.values['prefer_widget'] or not dedi_available(aseco)
 
     async def visible(self, aseco):
         if not self.active(aseco) or not self.values['widget_enabled']:
             return False
-        from apps.ui.record_views import _is_rpg_track_active, _is_trial_track_active, _is_ultimania_track_active
-        if (await _is_rpg_track_active(aseco) or await _is_trial_track_active(aseco)
-                or await _is_ultimania_track_active(aseco)):
+        from apps.ui.record_views import _is_rpg_track_active, _is_trial_track_active
+        if await _is_rpg_track_active(aseco) or await _is_trial_track_active(aseco):
             return False
         return self.cached_visible(aseco)
 
@@ -168,8 +172,8 @@ class Runtime:
         self.epoch += 1
         self.uid = current_uid(aseco)
         mode = getattr(aseco.server.gameinfo, 'mode', -1)
-        self.track = map_data(aseco.server.challenge, mode)
-        self.mode = MODES.get(mode, '')
+        self.track = map_data(aseco.server.challenge, mode) if game_for(aseco) != 'TM2' or mode == 1 else None
+        self.mode = MODES.get(mode, '') if self.track else ''
         self.rows, self.available, self.map_announced = [], False, False
         self.best.clear()
         self.laps.clear()
@@ -185,16 +189,35 @@ class Runtime:
             await self.sync(aseco)
             return
         if self.client is None:
+            if monotonic() < self.next_due:
+                return
             actual = str(getattr(aseco.server, 'serverlogin', '') or '')
             login = self.values['server_login'] or actual
             if not actual:
                 return
-            if login != actual or not self.values['server_password'] or not re.fullmatch('[A-Z]{3}', self.values['nation']):
-                if monotonic() >= self.next_due:
-                    logger.warning('[Mania Records] Configure DEDI_LOGIN/DEDI_PASSWORD/DEDI_NATION or Mania Records overrides; the login must match the connected dedicated server.')
+            settings = self.values
+            password, nation = settings['server_password'], settings['nation']
+            if game_for(aseco) == 'TM2' and login == actual:
+                base = Path(aseco._base_dir)
+                server = aseco.server
+                try:
+                    if not password:
+                        password = await file_io(dedicated_password, base, getattr(server, 'gamedir', ''),
+                                                 getattr(server, 'trackdir', ''), actual, settings['dedicated_cfg'])
+                    if not nation:
+                        nation = await file_io(nation_code, base, getattr(server, 'zone', ''))
+                except ValueError as error:
+                    logger.warning('[Mania Records] %s', error)
                     self.next_due = monotonic() + 300
+                    return
+                if settings is not self.values or not self.enabled:
+                    return
+            if login != actual or not password or not re.fullmatch('[A-Z]{3}', nation):
+                logger.warning('[Mania Records] Matching dedicated account credentials and a three-letter nation are required. Verify dedicated_cfg.default.txt or WRMania overrides.')
+                self.next_due = monotonic() + 300
                 return
-            self.client = Client(aseco, {**self.values, 'server_login': login})
+            self.client = Client(aseco, {**settings, 'server_login': login,
+                                        'server_password': password, 'nation': nation})
         self.heartbeat_tick(aseco)
         if (self.client.authenticated and self.values['submit_records']
                 and monotonic() >= max(self.retry_after, self.reconcile_after)):
@@ -329,7 +352,7 @@ class Runtime:
                    + [self.best.get(login, 2147483648)])
         if score >= best:
             return
-        submission = {'eventId': uuid4().hex, 'game': 'TMF', 'mode': self.mode,
+        submission = {'eventId': uuid4().hex, 'game': game_for(aseco), 'mode': self.mode,
             'map': dict(self.track), 'player': {'login': login, 'nickname': str(player.nickname)[:120],
                 'nation': str(getattr(player, 'nation', '') or '')[:24]},
             'run': {'timeMs': score, 'checkpointsMs': checks,
@@ -346,6 +369,8 @@ class Runtime:
             if (not self.enabled or not self.values['submit_records'] or self.client is None
                     or not self.client.authenticated or monotonic() < self.retry_after):
                 raise PreparationDeferred('WRMania authentication is not ready.')
+            if data['submission'].get('game') != self.client.game:
+                raise PreparationRejected('Captured WRMania run belongs to a different game.')
             if (data['api_base'] != self.client.base
                     or data['server_login'] != self.client.values['server_login']):
                 raise PreparationRejected('Captured WRMania destination/account differs from configuration.')

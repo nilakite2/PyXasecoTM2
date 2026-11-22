@@ -902,14 +902,14 @@ async def _redraw_all(aseco: 'Aseco'):
 
 
 async def _redraw_player(aseco: 'Aseco', login: str):
+    from .actions import ACTION_TOGGLE
     from ..widgets.common import _hide, _send
 
-# Keep F7 bound through an always-present hidden actionkey manialink.
-    # so widgets can be restored even while they are currently hidden.
+    # Keep F8 bound even while the widgets are hidden so they can be restored.
     await _send(
         aseco,
         login,
-        f'<manialink id="{ML_ACTIONKEYS}"><quad posn="70 70 1" sizen="0 0" action="382009003" actionkey="3"/></manialink>',
+        f'<manialink id="{ML_ACTIONKEYS}"><quad posn="70 70 1" sizen="0 0" action="{ACTION_TOGGLE}" actionkey="4"/></manialink>',
     )
 
     if not _state.player_visible.get(login, True):
@@ -977,12 +977,9 @@ async def _draw_local_player(aseco: 'Aseco', login: str):
 
 
 async def _draw_dedi_player(aseco: 'Aseco', login: str):
-    from ..record_views import _is_ultimania_track_active
     from ..record_views import _is_rpg_track_active
     from ..record_views import _is_trial_track_active
-    if await _is_ultimania_track_active(aseco):
-        from ..record_views import _draw_ultimania_player as impl
-    elif await _is_rpg_track_active(aseco):
+    if await _is_rpg_track_active(aseco):
         from ..record_views import _draw_rpg_player as impl
     elif await _is_trial_track_active(aseco):
         from ..record_views import _draw_trial_player as impl

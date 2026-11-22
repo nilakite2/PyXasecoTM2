@@ -20,7 +20,8 @@ from typing import TYPE_CHECKING
 
 from pyxaseco.core.config import load_toml_file
 from pyxaseco.core.widget_delivery import is_score_phase
-from pyxaseco.helpers import display_manialink, display_manialink_multi, format_text, format_time
+from pyxaseco.helpers import display_manialink, display_manialink_multi, format_text, format_time, format_widget_time
+from pyxaseco.models import Gameinfo
 from pyxaseco.app_services import (
     get_dedi_db,
     localdb_get_donations,
@@ -894,7 +895,7 @@ def _get_player_local_pb(aseco: "Aseco", login: str) -> str:
         for i in range(records.count()):
             rec = records.get_record(i)
             if rec and rec.player and rec.player.login == login:
-                return aseco.format_time(rec.score) if getattr(aseco, 'is_maniaplanet', False) else format_time(rec.score)
+                return _format_panel_score(aseco, rec.score)
     except Exception:
         pass
     return _EMPTY_RECORD_VALUE
@@ -907,6 +908,13 @@ def set_records_panel(which: str, value: str):
     logger.debug("[Panels] set_records_panel %s = %r", which, value)
     _records_cache[which] = value
 
+
+def _format_panel_score(aseco: "Aseco", score: int) -> str:
+    if getattr(aseco, 'is_maniaplanet', False):
+        return str(score) if aseco.server.gameinfo.mode == Gameinfo.STNT else format_widget_time(score)
+    return format_time(score)
+
+
 def _update_records_cache(aseco: "Aseco"):
     _records_cache["local"] = _EMPTY_RECORD_VALUE
     _records_cache["dedi"] = _EMPTY_RECORD_VALUE
@@ -915,15 +923,14 @@ def _update_records_cache(aseco: "Aseco"):
         if aseco.server.records.count() > 0:
             rec = aseco.server.records.get_record(0)
             if rec:
-                _records_cache["local"] = aseco.format_time(rec.score) if getattr(aseco, 'is_maniaplanet', False) else format_time(rec.score)
+                _records_cache["local"] = _format_panel_score(aseco, rec.score)
     except Exception:
         pass
 
     try:
         recs = get_dedi_db(aseco).get("Challenge", {}).get("Records", [])
         if recs:
-            formatter = aseco.format_time if getattr(aseco, 'is_maniaplanet', False) else format_time
-            _records_cache["dedi"] = formatter(int(recs[0].get("Best", 0) or 0))
+            _records_cache["dedi"] = _format_panel_score(aseco, int(recs[0].get("Best", 0) or 0))
     except Exception:
         pass
 

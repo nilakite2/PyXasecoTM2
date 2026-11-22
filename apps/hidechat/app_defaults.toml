@@ -9,6 +9,6 @@ global_messages = false
 
 [hidechat.button]
 enabled = true
-pos_x = -63.9
-pos_y = -40.0
-size = 1.6
+pos_x = -63.8
+pos_y = -36.8
+size = 2.0

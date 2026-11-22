@@ -56,7 +56,7 @@ log before restarting during an outage.
   list or proof that a submission was acknowledged.
 - Dedimania applies its own eligibility and ranking limits; this is not unlimited
   local PB storage and does not cover Stunts records.
-- The shared HUD slot may instead display recognised Ultimania/RPG/Trial records;
+- The shared HUD slot may instead display recognised RPG/Trial records;
   the Local Records widget remains separate.
 - The legacy API can use unencrypted HTTP. Submissions disclose the relevant
   player/map/record data to Dedimania; enable with that understanding.

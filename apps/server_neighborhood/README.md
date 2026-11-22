@@ -15,7 +15,7 @@ The Servers widget opens the same view. `/server` is the separate Server Info co
 
 ## Configuration
 
-Enable `app/server_neighborhood` and restart. Set `directory` in
+Enable `app/server_neighborhood` in `apps.mp.toml` and restart. Set `directory` in
 `app_defaults.toml` to the same absolute local folder on all linked instances,
 for example `'C:\TrackMania_Servers\Neighborhood'`.
 Controller accounts need read/write access there, and each server needs a unique login.
@@ -31,8 +31,10 @@ are editable through `//apps config server_neighborhood`.
 - Includes the current server marked `(here)`. The widget defaults to three rows;
   `entries` accepts 1-10 and `width` accepts 15.5-40.
 - Stale/offline entries cannot be joined; full servers offer Spectate only.
-  TMF still enforces capacity/password restrictions.
-- F7, Classic/Modern styles and per-player accents apply.
+  ManiaPlanet still enforces capacity/password restrictions.
+- MP publishes separate `*_maniaplanet.status.xml` files, so the same server
+  login can be used in both editions. MP join links include the server title ID.
+- F8, Classic/Modern styles and per-player accents apply.
 - Shared snapshots contain server/map metadata and counts, not player rosters,
   passwords, database credentials or XML-RPC endpoints.
 - Uses local folders, not FTP/HTTP relays or UNC transport. Moving an installation

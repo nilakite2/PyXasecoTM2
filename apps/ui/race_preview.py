@@ -1,6 +1,6 @@
 """Build race HUD samples independently of live widget and game state."""
 
-from pyxaseco.helpers import format_time
+from pyxaseco.helpers import format_time, format_widget_time
 from pyxaseco.models import Gameinfo
 
 from . import allbutton, banner, karma, menu
@@ -16,6 +16,7 @@ _LIMITS = {Gameinfo.RNDS: '50 pts.', Gameinfo.TA: '5:00', Gameinfo.TEAM: '7 pts.
 
 
 def _records(aseco, login, mode, names, *, fast_records):
+    formatter = format_widget_time if getattr(aseco, 'is_maniaplanet', False) else format_time
     for identifier, configs in ((91812, _state.local), (91811, _state.dedi), (91813, _state.live)):
         if (identifier == 91811 and mode == Gameinfo.STNT) or (fast_records and identifier != 91813):
             continue
@@ -40,7 +41,7 @@ def _records(aseco, login, mode, names, *, fast_records):
                     elif mode == Gameinfo.LAPS and cfg.display_type != 'time':
                         score = f'{13 - i}/30'
                     else:
-                        score = format_time(score)
+                        score = formatter(score)
                 entries.append({'rank': i + 1, 'nickname': names[i % len(names)], 'score': score,
                                 'login': login if i == 2 else f'preview{i}', 'self': 0 if i == 2 else -1})
         yield _build_record_widget(aseco=aseco, ml_id=identifier, cfg=cfg, login=login,
@@ -81,7 +82,8 @@ def sample_widgets(aseco, player, mode, track, names, fast):
         (_state.ladderlimit, bars._build_ladderlimit_xml, (0, 60000)),
         (_state.current_ranking, bars._build_currentranking_xml,
          ('---', 'FIRST') if mode == Gameinfo.TEAM else ('3/8', 'RANKING')),
-        (_state.tmexchange, bars._build_tmexchange_xml, (True, '980' if mode == Gameinfo.STNT else '0:58.82')),
+        (_state.tmexchange, bars._build_tmexchange_xml,
+         (True, '980' if mode == Gameinfo.STNT else '58.820' if mp else '0:58.82')),
         (_state.toplist, bars._build_toplist_xml, ()),
         (_state.favorite, bars._build_favorite_xml, (False,)),
         (_state.clock, bars._build_clock_xml, (tz, False)),

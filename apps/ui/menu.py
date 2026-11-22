@@ -42,7 +42,6 @@ _OPTIONAL_FEATURE_DEPENDENCIES = {
     'plugin.rpoints.php': 'feature_rpoints',
     'plugin.msglog.php': 'feature_msglog',
     'plugin.tgj_allbutton.php': 'feature_allbutton',
-    'plugin.freezone.php': 'feature_freezone',
     'plugin.stalker_actionids.php': 'feature_stalker_actionids',
     'plugin.stalker_tools.php': 'feature_stalker_tools',
 }

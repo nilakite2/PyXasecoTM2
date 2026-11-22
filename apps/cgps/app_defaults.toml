@@ -2,7 +2,7 @@
 enabled = true
 
 [cgps.widget]
-enabled = true
+enabled = false
 pos_x = 44.4
 pos_y = 32.8
 width = 4.6

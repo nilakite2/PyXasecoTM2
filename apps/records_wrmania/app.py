@@ -8,6 +8,7 @@ APP_METADATA = {
     'id': 'records_wrmania', 'display_name': 'Mania Records',
     'description': 'Optional WRMania submissions and fallback global-record widget.',
     'modules': ['apps/records_wrmania/service.py', 'apps/records_wrmania/api.py',
+                'apps/records_wrmania/credentials.py',
                 'apps/records_wrmania/records_widget.py'],
     'entries': ['app/records_wrmania'], 'provides': ['service/records_wrmania'],
     'depends_on': ['platform_core', 'ui'],

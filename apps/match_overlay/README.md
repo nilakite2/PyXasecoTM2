@@ -42,7 +42,7 @@ Defaults: manual activation, Team mode, spectators only, hidden on the score scr
   and explicit restart recovery. When it owns a match, the overlay uses its team
   names/totals/state; `mscore` and team-name commands update that same service.
   Resetting the FAST match restores the overlay's separate manual names/totals.
-- Leaving Team mode disables display until re-enabled. F7 and per-player styles apply.
+- Leaving Team mode disables display until re-enabled. F8 and per-player styles apply.
 - Automatic naming needs at least two team players; manual names remain available.
 
 ## Credits

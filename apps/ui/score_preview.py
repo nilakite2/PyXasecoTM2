@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 
 from apps.platform_ui.presentation import DECLARATION, SCORE_PREVIEW_PAGE, style_xml
 from pyxaseco.core.widget_delivery import deliver_ui, is_score_phase
-from pyxaseco.helpers import format_time
+from pyxaseco.helpers import format_time, format_widget_time
 from pyxaseco.models import Gameinfo
 
 from . import allbutton, karma, race_preview, toplists
@@ -83,7 +83,7 @@ def _sample_list(key, identifier, *, records, mode, aseco=None):
     mp = getattr(aseco, 'is_maniaplanet', False) is True
     if records:
         height = cfg.get('height') or step * count + 3.3
-        formatter = aseco.format_time if mp else format_time
+        formatter = format_widget_time if mp else format_time
         rows = [(i + 1, str(980 - i * 25) if mode == Gameinfo.STNT else formatter(58820 + i * 1370),
                  _NAMES[i % len(_NAMES)]) for i in range(count)]
         columns = score_widgets._record_columns(aseco, cfg, rows)

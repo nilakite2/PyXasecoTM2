@@ -1,75 +1,70 @@
-# PyXasecoMP v0.1-DEV
+# PyXasecoMP v1.0
 
-PyXasecoMP is a Python server controller for **TrackMania 2 on ManiaPlanet 4**.
-It is based on PyXaseco 1.7 and targets scripted **Time Attack**, including RPG
-and Trial servers. It is not an update for TrackMania Forever, Trackmania 2020,
-or ShootMania. Use a separate database for MP.
+PyXasecoMP is a TrackMania 2 server controller based on PyXaseco 1.7. It
+supports **scripted Time Attack on ManiaPlanet 4**, including RPG and Trial
+servers. It provides local records and checkpoint times, ManiaExchange map
+search and jukebox tools, admin commands, and customizable in-game widgets.
+ShootMania, non-Time Attack modes, and TrackMania Forever are not supported
+by this edition.
 
-## Setup
+## Install
 
-1. Start a ManiaPlanet 4 dedicated server with a supported TrackMania title and
-   a Time Attack mode script.
-2. Install Python 3.12 or newer and the pinned requirements:
+You need Python 3.12, a ManiaPlanet 4 TrackMania dedicated server on the
+same host, and a MySQL or MariaDB database separate from any TMF database.
+Start the dedicated server with a scripted Time Attack playlist and note its
+XML-RPC port and SuperAdmin credentials.
 
-   ```powershell
-   py -3.12 -m pip install -r .\requirements.txt
-   ```
-
-3. Create a local `.env` from [the example](.env.example). Set
-   `PYXASECOMP_RPC_LOGIN` and `PYXASECOMP_RPC_PASSWORD` to an account from the
-   dedicated server's `<authorization_levels>`, not its master-server password.
-   Leave the RPC password blank to be prompted. Configure `MP_DB_*` for a
-   separate MP database. Its user needs schema and data privileges on that
-   database only. LocalDB creates or checks the standard PyXaseco tables.
-4. Add your **player login** under `[masteradmins]` in
-   [adminops.toml](adminops.toml). Choose optional apps in
-   [apps.mp.toml](apps.mp.toml).
-
-Use the controller on the dedicated host when importing maps, writing playlists,
-or saving replay-backed records. These operations require access to the
-dedicated server's local files.
-
-## Run
+From the controller folder, install the dependencies:
 
 ```powershell
-py -3.12 .\main.py --probe --host 127.0.0.1 --port 5000
-.\PyXasecoMP.bat --host 127.0.0.1 --port 5000 --debug
+py -3.12 -m pip install -r .\requirements.txt
 ```
 
-Use the actual XML-RPC port of your dedicated server. `--probe` only reads
-server status and map metadata; it does not enable callbacks or touch MySQL.
-`--watch --seconds 60` is a test-server diagnostic that can leave mode-script
-callbacks enabled. `//pyres` restarts only the controller and preserves its
-launch arguments.
+Create a `.env` from [`.env.example`](.env.example). Set `MP_DB_NAME`,
+`MP_DB_USER`, and `MP_DB_PASSWORD` for the new database. Give that database
+account schema and data privileges on its own database only. The controller
+creates its tables on first startup; no SQL import is needed for a fresh install.
 
-The [optional Time Attack script](UserData/Scripts/PyXaseco_TimeAttack.Script.txt)
-and [sample playlist](UserData/Maps/MatchSettings/MatchSettings.example.txt)
-are dedicated-server files, not required for the controller's ZIP. Replace the
-sample map path with an installed map before loading the playlist. Do not
-overwrite an existing dedicated preset.
+Set `PYXASECOMP_RPC_LOGIN` and `PYXASECOMP_RPC_PASSWORD` using the dedicated
+server's `<authorization_levels>`, not the ManiaPlanet account password. Set
+`tmlogin` under `[masteradmins]` in [`config.toml`](config.toml) to the in-game
+login or logins that should have controller admin access. Keep `.env` private.
+
+Replace `5000` below with the XML-RPC port from your dedicated server config.
+The first command checks the connection without touching the database. The
+second starts the controller.
+
+```powershell
+py -3.12 .\main.py --probe --port 5000
+py -3.12 .\main.py --port 5000
+```
+
+Add `--prompt-password` to enter your XML-RPC password interactively or
+`--debug` for more detailed logs. `//pyres` restarts only the controller and
+keeps its startup arguments.
 
 ## In Game
 
-- Local records and splits: `/pb`, `/recs`, `/cptms`, `/sectms`, `/cplive`, `/ztrack`.
-- ManiaExchange: `/mxinfo`, `/mxrecs`, `/xlist`, and admin `/mxr`, `//add <id>`,
-  `//addfile maps.txt`, or `//replacemap <id>`. Bulk ID files belong in
-  [map_imports](map_imports/README.md).
-- Playlist controls: `/ms` and `//readtracklist <file>` select a local TA preset.
-  If the controller cannot identify the active preset, select it before writing
-  to it. [Strict titlepack filtering](TA_TITLEPACK_DEPLOYMENT.md) is optional
-  and off by default.
-- External services: Trial and RPG records use their own providers. Dedimania,
-  MXKarma, Discord webhooks and PYXA Stats have separate configuration. Use
-  [the environment example](.env.example) to see which values are optional.
-  Manual Planets billing is supported; automatic payouts and non-TA modes are
-  not part of this build.
+- `/help` lists commands. Finish a run and try `/pb`, `/recs`, or `/cptms`.
+- `/mxinfo` shows the current map's ManiaExchange listing; `/mxrecs` shows
+  its MX times. Admins can use `//add <id>` or [`//addfile <file>`](map_imports/README.md).
+- `/hud` adjusts your HUD, and F8 hides or restores supported widgets.
+- `//apps` manages apps and server-wide widget settings. The MP controller
+  reads [`apps.mp.toml`](apps.mp.toml), not `apps.toml`.
 
-## Updates
+External integrations such as Dedimania, MXKarma, Discord, and PYXA Stats
+have their own settings or credentials. See the comments in `.env.example`
+and the individual app guides for setup.
 
-MP uses [PyXasecoTM2 Releases](https://github.com/nilakite2/PyXasecoTM2/releases)
-and the website's `stabletm2` feed. Update checks are off by default. Both
-publishers must agree before a ZIP can be staged. Do not install a TMF package
-into this repository or into an MP controller.
+## Upgrading From MP 0.1
 
-See [app credits](APP_CREDITS.md) for inherited components and [GPLv3](LICENSE)
-for the license.
+Back up your controller and database. For servers using the full-ZIP updater,
+enable `[apps_manager.updates].enabled` in `apps/apps_manager/app_defaults.toml`,
+run `//apps updates`, and review `//apps update controller` before confirming.
+The updater requires matching releases from both providers. It preserves live
+configuration and locally modified files. Review any retained code before
+restarting with `//pyres`.
+
+## Credits And License
+
+See [app credits](APP_CREDITS.md) and the [GPLv3 license](LICENSE).

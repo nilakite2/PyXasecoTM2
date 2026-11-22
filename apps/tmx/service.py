@@ -20,7 +20,7 @@ import urllib.parse
 from aiohttp import ClientError
 from typing import TYPE_CHECKING
 
-from pyxaseco.helpers import clean_tm_text, format_text, format_time, display_manialink, validate_utf8
+from pyxaseco.helpers import clean_tm_text, format_text, format_time, format_widget_time, display_manialink, validate_utf8
 from pyxaseco.models import Gameinfo
 from pyxaseco.core.bounded_cache import BoundedCache
 from pyxaseco.core.external_io import request_json
@@ -820,11 +820,13 @@ async def _tmx_worldrec(aseco: "Aseco", challenge):
             challenge.tmx_prefix = _tmx_prefix_for_section(data['section'])
         records = data.get('recordlist', [])
         value = empty
+        panel_value = empty
         if records:
             rec = records[0]
             value = str(rec['time']) if mode == Gameinfo.STNT else format_time(rec['time'])
+            panel_value = format_widget_time(rec['time']) if section == mx.SECTION and mode != Gameinfo.STNT else value
         if panel:
-            panel.set_records_panel('tmx', value)
+            panel.set_records_panel('tmx', panel_value)
             await panel.update_allrecpanels(aseco)
         if records and int(getattr(aseco.settings, 'show_tmxrec', 0) or 0) > 0:
             msg = (f'{{#server}}> {{#message}}ManiaExchange best: {{#highlite}}{value} $zby {rec["name"]}'

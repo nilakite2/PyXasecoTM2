@@ -102,7 +102,7 @@ def _local_image(name, values, root):
     return base.rstrip('/') + '/' + quote(relative, safe='/')
 
 
-def configuration(section, root):
+def configuration(section, root, *, maniaplanet=False):
     if not isinstance(section, dict):
         raise ValueError('sponsor_banner must be a TOML table.')
     values = {setting.key: setting.read(section) for setting in SCHEMA.settings}
@@ -138,7 +138,7 @@ def configuration(section, root):
             path = unquote(urlsplit(image).path).lower()
             if not path.endswith(('.jpg', '.jpeg', '.png', '.tga', '.dds', '.gif')):
                 raise ValueError('Use a direct JPG, PNG, TGA, DDS or GIF image address.')
-            link = web_url(entry.get('link_url', ''), clickable=True)
+            link = web_url(entry.get('link_url', ''), clickable=not maniaplanet)
             duration = _integer(entry.get('duration_seconds', 0), 0, 86400, 'duration_seconds')
             order = _integer(entry.get('order', position), 0, 100000, 'order')
             banners.append(Banner(str(key), image, link, duration or values['interval_seconds'], order))
@@ -175,7 +175,8 @@ class SponsorBannerApp(App):
 
     async def configure(self, aseco):
         bound = await file_io(bind_app_settings, SCHEMA, getattr(aseco, '_base_dir', None))
-        values, banners = await file_io(configuration, bound.section, Path(aseco._base_dir))
+        values, banners = await file_io(configuration, bound.section, Path(aseco._base_dir),
+                                        maniaplanet=getattr(aseco, 'is_maniaplanet', False))
         # Validate the complete candidate before replacing the running rotation.
         self.values, self.banners, self.enabled = values, banners, values['enabled']
         self.index = 0

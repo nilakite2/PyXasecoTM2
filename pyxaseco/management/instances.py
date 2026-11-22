@@ -15,8 +15,12 @@ from .config_store import ManagementError, update_file
 
 def controller_root(path: str | Path) -> Path:
     root = Path(path).expanduser().resolve()
-    if not (root / 'main.py').is_file() and (root / 'PyXaseco').is_dir():
-        root = root / 'PyXaseco'
+    if not (root / 'main.py').is_file():
+        matches = [root / name for name in ('PyXaseco', 'PyXasecoMP') if (root / name / 'main.py').is_file()]
+        if len(matches) > 1:
+            raise ManagementError('Select the intended controller subfolder')
+        if matches:
+            root = matches[0]
     if not all((root / name).exists() for name in ('main.py', 'pyxaseco', 'apps', 'config.toml')):
         raise ManagementError('Expected a PyXaseco controller folder or its dedicated-server parent')
     return root.resolve()

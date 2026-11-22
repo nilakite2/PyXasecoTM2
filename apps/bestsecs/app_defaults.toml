@@ -5,8 +5,8 @@ compare_own_rec_to_self = "1"
 remove_sec_from_db = "1"
 
 [bestsecs.config.position]
-xpos = "-59.5"
-ypos = "-32"
+xpos = "50.8"
+ypos = "-8.8"
 
 [bestsecs.config.display_recs]
 sec_recs = "1"

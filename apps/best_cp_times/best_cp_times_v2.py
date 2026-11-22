@@ -18,6 +18,7 @@ from apps.platform_ui.hud_layout import text_geometry
 from pyxaseco.app_config import (AppSetting, AppSettingsSchema, as_bool, as_float,
                                  as_int, bind_app_settings)
 from pyxaseco.core.config import display_path
+from pyxaseco.helpers import format_widget_time
 
 if TYPE_CHECKING:
     from pyxaseco.core.aseco import Aseco
@@ -812,25 +813,7 @@ async def reload_best_cp_times_runtime(aseco: "Aseco") -> None:
 
 
 def bct_formatTime(mw_time: int, hsec: bool = True) -> str:
-    if mw_time == -1:
-        return "???"
-
-    hseconds = (mw_time - ((mw_time // 1000) * 1000)) // 10
-    mw_time = mw_time // 1000
-    hours = mw_time // 3600
-    mw_time -= hours * 3600
-    minutes = mw_time // 60
-    mw_time -= minutes * 60
-    seconds = mw_time
-
-    if hsec:
-        if hours:
-            return f"{hours}:{minutes:02d}:{seconds:02d}.{hseconds:02d}"
-        return f"{minutes}:{seconds:02d}.{hseconds:02d}"
-    else:
-        if hours:
-            return f"{hours}:{minutes:02d}:{seconds:02d}"
-        return f"{minutes}:{seconds:02d}"
+    return '???' if mw_time == -1 else format_widget_time(mw_time, hsec)
 
 
 def bct_handleSpecialChars(string: str) -> str:

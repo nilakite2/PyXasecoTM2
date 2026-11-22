@@ -70,8 +70,7 @@ async def snapshots(aseco):
                           nickname=getattr(player, 'nickname', '?'),
                           checks=getattr(record, 'checks', [])))
     sources.append(Source('records_local', 'Local Records', '/recs', normalise(local)))
-    for app, label, command in (('records_ultimania', 'Ultimania', '/ultirecs'),
-                                ('records_wrmania', 'Mania Records', '/wrrecs')):
+    for app, label, command in (('records_wrmania', 'Mania Records', '/wrrecs'),):
         service = aseco.get_service(f'service/{app}') if app in active else None
         if service is not None and service.active(aseco):
             limit = getattr(getattr(service, 'client', None), 'limit', len(service.rows))

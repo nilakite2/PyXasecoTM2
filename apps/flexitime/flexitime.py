@@ -9,11 +9,13 @@ Ported from the legacy plugin.flexitime.php line, but adapted to v1.2:
 
 from __future__ import annotations
 
+from html import escape
 import logging
 from typing import TYPE_CHECKING
 
 from pyxaseco.app_config import AppSetting, AppSettingsSchema, as_bool, as_int, as_str, bind_app_settings
 from pyxaseco.app_services import localdb_get_pool
+from pyxaseco.maniaplanet_client import TMF_SCALE_X, TMF_SCALE_Y
 from pyxaseco.models import Gameinfo
 from pyxaseco.core.widget_delivery import deliver_ui, is_score_phase
 
@@ -23,6 +25,27 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 ML_ID = 29288
+
+HUD_GEOMETRY = {
+    'pos_x': (64.0, -64, 64),
+    'pos_y': (20.0, -48, 48),
+    'width': (14.0, 0, 128),
+    'height': (5.0, 0, 96),
+    'text_scale': (0.6, 0.1, 3),
+}
+HUD_DEFAULTS = {key: values[0] for key, values in HUD_GEOMETRY.items()}
+
+
+def hud_geometry(table):
+    if not isinstance(table, dict):
+        raise ValueError('FlexiTime HUD settings must be a table.')
+    layout = {}
+    for key, (default, lower, upper) in HUD_GEOMETRY.items():
+        value = table.get(key, default)
+        if type(value) not in (int, float) or not lower <= value <= upper:
+            raise ValueError(f'FlexiTime HUD {key} must be between {lower:g} and {upper:g}.')
+        layout[key] = float(value)
+    return layout
 
 
 def _as_login_list(value, default=None) -> list[str]:
@@ -77,6 +100,7 @@ class FlexiTime:
         self.warn_colour = 'ff4'
         self.danger_time = 60
         self.danger_colour = 'f44'
+        self.hud = HUD_DEFAULTS.copy()
 
         self.time_left = self.default_time * 60
         self.author_time = 0
@@ -105,6 +129,7 @@ class FlexiTime:
     def _load_config(self) -> None:
         try:
             bound = bind_app_settings(FLEXITIME_SETTINGS_SCHEMA, getattr(self.aseco, '_base_dir', None))
+            self.hud = hud_geometry(bound.section.get('hud', {}))
             self.admin_level = int(bound.values['admin_level'])
             self.admins = list(bound.values['whitelist'])
             self.default_time = int(bound.values['default_time'])
@@ -243,16 +268,34 @@ class FlexiTime:
 
         colour = self._colour()
         showtime = self._time_str(self.time_left)
-        xpos = '120' if self.paused else '54' if getattr(self.aseco, 'is_maniaplanet', False) else '60'
-        body = (
-            f'<frame scale="1" posn="{xpos} 20">'
-            f'<quad posn="8 0 0" sizen="18 5" halign="right" valign="center" '
-            f'style="BgsPlayerCard" substyle="BgPlayerCardBig"/>'
-            f'<label posn="3.5 0.1 0.1" halign="right" valign="center" scale="0.6" '
-            f'style="TextRaceChrono" text="$s${colour}{showtime}"/>'
-            '</frame>'
-        )
-        hud = f'<?xml version="1.0" encoding="UTF-8"?><manialink id="{ML_ID}">{body}</manialink>'
+        if getattr(self.aseco, 'is_maniaplanet', False):
+            if self.paused:
+                await self.hide_panel(pause=False)
+                return
+            layout = self.hud
+            x, y = layout['pos_x'] * TMF_SCALE_X, layout['pos_y'] * TMF_SCALE_Y
+            width, height = layout['width'] * TMF_SCALE_X, layout['height'] * TMF_SCALE_Y
+            backdrop = (
+                f'<quad pos="0 0" size="{width:g} {height:g}" z-index="0" halign="right" valign="center" '
+                'style="BgsPlayerCard" substyle="BgCard"/>'
+            ) if width and height else ''
+            hud = (
+                f'<manialink id="{ML_ID}" version="3"><frame pos="{x:g} {y:g}">{backdrop}'
+                '<label pos="-1.25 0.1875" size="54 14" z-index="1" halign="right" valign="center" '
+                f'scale="{layout["text_scale"]:g}" style="TextRaceChrono" text="$s${escape(colour)}{showtime}"/>'
+                '</frame></manialink>'
+            )
+        else:
+            xpos = '120' if self.paused else '60'
+            body = (
+                f'<frame scale="1" posn="{xpos} 20">'
+                f'<quad posn="8 0 0" sizen="18 5" halign="right" valign="center" '
+                f'style="BgsPlayerCard" substyle="BgPlayerCardBig"/>'
+                f'<label posn="3.5 0.1 0.1" halign="right" valign="center" scale="0.6" '
+                f'style="TextRaceChrono" text="$s${colour}{showtime}"/>'
+                '</frame>'
+            )
+            hud = f'<?xml version="1.0" encoding="UTF-8"?><manialink id="{ML_ID}">{body}</manialink>'
         await deliver_ui(self.aseco, 'SendDisplayManialinkPage', hud, 0, False)
         self._panel_visible = True
 

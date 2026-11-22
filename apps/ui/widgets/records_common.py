@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from pyxaseco.helpers import format_time
+from pyxaseco.helpers import format_time, format_widget_time
 from apps.platform_ui.record_layout import record_columns, fitted_size
 
 from ..config import WidgetCfg, StyleCfg, _state
@@ -171,7 +171,7 @@ def _build_record_widget(
             return '--'
         if is_live or isinstance(value, str) or mode == 4:
             return str(value)
-        return aseco.format_time(int(value)) if mp else format_time(int(value))
+        return format_widget_time(int(value)) if mp else format_time(int(value))
     columns = record_columns(w,
         [f"{entry.get('rank')}." for entry in entries if entry.get('rank') is not False],
         [score_text(entry) for entry in entries]) if mp else None

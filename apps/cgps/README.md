@@ -34,7 +34,7 @@ or through supported `//apps config cgps` fields.
   HTTP or redirect the browser. Only HTTP/HTTPS URLs are accepted.
 - Known map names/UIDs are synchronized without overwriting saved links.
   Removing a map from the playlist keeps its GPS for later reuse.
-- F7 controls widget visibility; it is hidden on the score screen.
+- F8 controls widget visibility; it is hidden on the score screen.
 - Links live in MariaDB: include the database when backing them up.
 
 ## Credits

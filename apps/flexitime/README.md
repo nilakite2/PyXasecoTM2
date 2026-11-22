@@ -28,6 +28,13 @@ default minutes, author-time multiplier, minimum limit, custom limits and HUD
 colors/warning thresholds. Per-map custom times require the local database.
 Supported defaults are editable through `//apps config flexitime`.
 
+On PyXasecoMP, open **Timer HUD** under `//apps config flexitime`. Left/Right
+and Up/Down move the timer and background together. **Timer text scale**
+changes only the digits; **Background width** and **Background height**
+change only the card. Set either background dimension to zero for text only.
+The position is the right edge and vertical centre of the card. Changes
+save and reload without resetting or unpausing the running timer.
+
 ## Changes And Limits
 
 Uses app-native TOML and the shared local database service instead of legacy

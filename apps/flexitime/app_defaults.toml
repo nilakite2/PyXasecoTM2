@@ -12,3 +12,12 @@ warn_time = 300
 warn_colour = "ff4"
 danger_time = 60
 danger_colour = "f44"
+
+[flexitime.hud]
+# Same HUD coordinate units as other widgets. Anchored at the right edge of the card.
+pos_x = 64.0
+pos_y = -32.8
+text_scale = 0.7
+# Background only. Set either dimension to 0 to show just the timer text.
+width = 6.2
+height = 3.6

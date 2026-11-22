@@ -9,7 +9,7 @@ import xml.etree.ElementTree as ET
 from pyxaseco.models import Gameinfo
 from pyxaseco.app_config import AppSetting, AppSettingsSchema, as_float, as_int, bind_app_settings
 from pyxaseco.core.config import display_path
-from pyxaseco.helpers import clean_tm_text, format_time_millis, safe_manialink_text
+from pyxaseco.helpers import clean_tm_text, format_widget_time, safe_manialink_text
 from pyxaseco.maniaplanet_client import TMF_SCALE_X, TMF_SCALE_Y
 from pyxaseco.maniaplanet_ui import CARD, TITLE, label, quad
 
@@ -210,7 +210,7 @@ def _mp4_widget() -> str:
     cfg = _state.config
     scale = cfg.scale
     runs = _state.bestfinishes[:cfg.nb_bestfinishes]
-    width, row_height = 30 * scale, 4.2 * scale
+    width, row_height = 14 * TMF_SCALE_X * scale, 4.8 * scale
     root = ET.Element('manialink', id=str(ML_ID), version='3')
     y = cfg.y * TMF_SCALE_Y
     frame = ET.SubElement(root, 'frame', pos=f'{cfg.x * TMF_SCALE_X:.8g} {y:.8g}', **{'z-index': '1'})
@@ -223,10 +223,12 @@ def _mp4_widget() -> str:
         y = top - row_height / 2
         quad(frame, 0, top, width, row_height, **CARD)
         nick = clean_tm_text(getattr(run.player, 'nickname', '')) or getattr(run.player, 'login', '')
-        style = {'valign': 'center2', 'scale': f'{0.85 * scale:g}', 'textcolor': 'FFFFFFFF'}
-        label(frame, 1.5 * scale, y, 13 * scale, row_height,
-              f'$z{rank}. $fff$n{format_time_millis(run.score)}', **style)
-        label(frame, 15 * scale, y, width - 16 * scale, row_height, nick, **style)
+        style = {'valign': 'center2', 'scale': f'{scale:g}', 'textcolor': 'FFFFFFFF'}
+        time = format_widget_time(run.score)
+        narrow = '$n' if run.score >= 60_000 else ''
+        label(frame, 1.5 * scale, y, 15.5 * scale, row_height,
+              f'$z{rank}. $fff{narrow}{time}', **style)
+        label(frame, 17.5 * scale, y, width - 19 * scale, row_height, nick, **style)
     return ET.tostring(root, encoding='unicode')
 
 

@@ -27,14 +27,24 @@ if TYPE_CHECKING:
 # Time formatting  (mirrors basic.inc.php)
 # ---------------------------------------------------------------------------
 
-def format_time_millis(ms: int, fractional: bool = True) -> str:
-    """Format a signed MP race time as M:SS.mmm or H:MM:SS.mmm."""
+def format_time_millis(ms: int, fractional: bool = True, *, omit_zero_minutes: bool = False) -> str:
+    """Format a signed MP race time, optionally showing only seconds below one minute."""
     sign = '-' if ms < 0 else ''
     total_s, millis = divmod(abs(ms), 1000)
     hours, remainder = divmod(total_s, 3600)
     minutes, seconds = divmod(remainder, 60)
-    base = f'{hours}:{minutes:02d}:{seconds:02d}' if hours else f'{minutes}:{seconds:02d}'
+    if hours:
+        base = f'{hours}:{minutes:02d}:{seconds:02d}'
+    elif minutes or not omit_zero_minutes:
+        base = f'{minutes}:{seconds:02d}'
+    else:
+        base = str(seconds)
     return sign + (f'{base}.{millis:03d}' if fractional else base)
+
+
+def format_widget_time(ms: int, fractional: bool = True) -> str:
+    """Format a HUD time without a zero-minute prefix, retaining millisecond precision."""
+    return format_time_millis(ms, fractional, omit_zero_minutes=True)
 
 
 def format_time(ms: int, hsec: bool = True) -> str:

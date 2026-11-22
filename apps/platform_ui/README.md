@@ -71,7 +71,7 @@ panels appear even if not currently drawn; the other panels must have been
 emitted for the player. Layouts with unsupported geometry can
 be hidden but not moved or resized. Native TMF UI, pop-up windows, score-only
 widgets and unregistered optional widgets are not edited. The server's
-configuration, permissions and existing F7 behavior still apply.
+configuration, permissions and F8 widget visibility still apply.
 
 Select a legacy Admin, Records, Donation or Vote panel to cycle through its
 templates or choose **Use default**. **Reset layout** changes only the personal

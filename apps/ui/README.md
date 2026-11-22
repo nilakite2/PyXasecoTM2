@@ -11,7 +11,7 @@ ManiaKarma voting and the FuFi menu. Uses Platform UI's per-player presets.
 | --- | --- | --- |
 | `/eyepiece` | Show Records-Eyepiece help. | Everyone |
 | `/menu` | Open the server menu. | Everyone |
-| `/togglewidgets` | Toggle widget visibility; F7 also controls visibility. | Everyone |
+| `/togglewidgets` | Toggle widget visibility; F8 also controls visibility. | Everyone |
 | `/elist` | Browse maps through the UI list. | Everyone |
 | `/estat <view>` | Open a supported extended ranking/statistics view. | Everyone |
 | `/eyeset` | Administrative Records-Eyepiece settings. | Administrative checks apply |
@@ -69,7 +69,7 @@ WRMania records app is not required for this Karma fallback.
 - Classic remains available; Modern and accent presets apply per player through
   shared rendering rather than replacing everyone's configuration.
 - Modern lists fit existing entries; windows and widgets follow the selected UI preset.
-- The external-record slot selects recognised Ultimania (Stunts), RPG, Trial or
+- The external-record slot selects recognised RPG, Trial or
   Dedimania data. These optional folders are not all required for UI startup.
 - ManiaKarma delivery distinguishes acknowledged votes from unavailable lookups.
   Its remote API is separate from local records and depends on external uptime.

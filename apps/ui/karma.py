@@ -107,6 +107,9 @@ REMINDER_BUTTONS = [
     (36.5, ACT_VOTE_N2, "$D02", "poor", "--"),
     (43.8, ACT_VOTE_N3, "$D02", "waste", "---"),
 ]
+MP_REMINDER_BUTTON_SIZE = '6.4 3.55'
+MP_REMINDER_BUTTON_COLOR = '263545F0'
+MP_REMINDER_FOCUS_COLOR = '435972FF'
 
 GM_TAG = {0: "rounds", 1: "time_attack", 2: "team", 3: "laps", 4: "stunts", 5: "cup", 7: "score"}
 
@@ -1985,15 +1988,17 @@ async def _show_reminder_window(aseco: Aseco, players: str | list[str]) -> None:
             p.data['ManiaKarma']['ReminderWindow'] = True
 
 
-def _mx_map_badge(aseco: Aseco) -> str:
+def _mx_map_badge(aseco: Aseco, *, y: float) -> str:
     url = _sanitize_ml_text(_tmx_page_url(aseco))
     if not url:
         return ''
     return (
-        '<quad posn="41.25 0.08 0" sizen="7 4" bgcolor="263545F0"/>'
-        '<quad posn="41.5 -0.4 0.01" sizen="3 3" style="Icons128x128_1" substyle="Challenge"/>'
-        '<label posn="45.9 -1.0 0.02" sizen="3 2" halign="center" textsize="1" textcolor="FFFF" text="MX"/>'
-        f'<quad posn="41.25 0.08 0.03" sizen="7 4" bgcolor="FFFFFF01" bgcolorfocus="FFFFFF16" url="{url}"/>'
+        f'<frame posn="41.5 {y:g}">'
+        f'<quad sizen="{MP_REMINDER_BUTTON_SIZE}" bgcolor="{MP_REMINDER_BUTTON_COLOR}"/>'
+        '<quad posn="0.3 -1.775 0.01" sizen="2.65 2.65" valign="center" style="Icons128x128_1" substyle="Challenge"/>'
+        '<label posn="4.55 -1.775 0.02" sizen="2.9 2" halign="center" valign="center" textsize="1" textcolor="FFFF" text="MX"/>'
+        f'<quad posn="0 0 0.03" sizen="{MP_REMINDER_BUTTON_SIZE}" bgcolor="FFFFFF01" bgcolorfocus="FFFFFF16" url="{url}"/>'
+        '</frame>'
     )
 
 
@@ -2034,18 +2039,19 @@ def _build_reminder_xml(aseco: Aseco, *, at_score: bool) -> str:
             color = '$9E6' if vote_text.startswith('+') else '$F98' if vote_text.startswith('-') else '$DDD'
         action_attrs = '' if mp else f' action="{action}"'
         text_depth = '0.01' if mp else '0'
-        button_skin = 'bgcolor="263545F0" bgcolorfocus="435972FF"' if mp else 'style="Bgs1InRace" substyle="BgIconBorder"'
-        button_height = '3.55' if mp else '3.75'
+        button_skin = (f'bgcolor="{MP_REMINDER_BUTTON_COLOR}" bgcolorfocus="{MP_REMINDER_FOCUS_COLOR}"'
+                       if mp else 'style="Bgs1InRace" substyle="BgIconBorder"')
+        button_size = MP_REMINDER_BUTTON_SIZE if mp else '6.4 3.75'
         xml.insert(
             -2,
             f'<frame posn="{pos_x} 0"{action_attrs}>'
-            f'<quad posn="0 0.15 0" sizen="6.4 {button_height}" action="{action}" {button_skin}/>'
+            f'<quad posn="0 0.15 0" sizen="{button_size}" action="{action}" {button_skin}/>'
             f'<label posn="3.2 -0.5 {text_depth}" sizen="6.2 0" halign="center" textsize="1"{action_attrs} text="{color}{labels[label_key]}"/>'
             f'<label posn="3.2 {command_y} {text_depth}" sizen="10 0" halign="center" textsize="1" scale="{command_scale}"{action_attrs} text="{color}{command_text}"/>'
             f'</frame>'
         )
     if getattr(aseco, 'is_maniaplanet', False):
-        xml.append(_mx_map_badge(aseco))
+        xml.append(_mx_map_badge(aseco, y=.1))
     elif _cfg.img_tmx_logo_normal and (url := _tmx_page_url(aseco)):
         xml.append(f'<quad posn="41.25 0.08 0" sizen="7 4" image="{_cfg.img_tmx_logo_normal}" imagefocus="{_cfg.img_tmx_logo_focus}" url="{url}"/>')
     xml.extend(['</frame>', '</frame>', '</manialink>', '</manialinks>'])
@@ -2069,8 +2075,9 @@ def _build_mx_window_xml(aseco: Aseco, vote: int, map_name: str) -> str:
     }.get(vote, '$888' + _cfg.msg_undecided.capitalize())
     cmd = {3: '$390+++', 2: '$390++', 1: '$390+', -1: '$D02-', -2: '$D02--', -3: '$D02---'}.get(vote, '$888-/+')
     rcfg = _cfg.reminder_score
-    button_skin = ('bgcolor="263545F0"' if getattr(aseco, 'is_maniaplanet', False)
+    button_skin = (f'bgcolor="{MP_REMINDER_BUTTON_COLOR}"' if getattr(aseco, 'is_maniaplanet', False)
                    else 'style="Bgs1InRace" substyle="BgIconBorder"')
+    vote_height = '3.55' if getattr(aseco, 'is_maniaplanet', False) else '3.75'
     xml = [
         '<?xml version="1.0" encoding="UTF-8"?><manialinks>',
         f'<manialink id="{ML_REMINDER}"><frame posn="{rcfg.pos_x} {rcfg.pos_y} 2">',
@@ -2078,7 +2085,7 @@ def _build_mx_window_xml(aseco: Aseco, vote: int, map_name: str) -> str:
         f'<label posn="16.5 0.3 1" sizen="18 1.8" textsize="2" scale="0.8" halign="right" textcolor="FFFF" text="{_cfg.msg_reminder_at_score}"/>',
         f'<label posn="16.5 -1.5 1" sizen="14 0.2" textsize="1" scale="0.8" halign="right" textcolor="FFFF" text="{_reminder_attribution(aseco)}"/>',
         '<frame posn="19.2 0.45 1">',
-        f'<quad posn="0 0.15 0" sizen="7.5 3.75" {button_skin}/>',
+        f'<quad posn="0 0.15 0" sizen="7.5 {vote_height}" {button_skin}/>',
         f'<label posn="3.75 -0.5 0" sizen="7 0" textsize="1" halign="center" text="{voted}"/>',
         f'<label posn="3.75 -1.8 0" sizen="10 0" textsize="1" halign="center" text="{cmd}"/>',
         '</frame>',
@@ -2086,7 +2093,7 @@ def _build_mx_window_xml(aseco: Aseco, vote: int, map_name: str) -> str:
         f'<label posn="40.5 -1.3 0" sizen="50 0" halign="right" textsize="1" textcolor="FFFF" text="Visit &#187; {map_name} &#171; at"/>',
     ]
     if getattr(aseco, 'is_maniaplanet', False):
-        xml.append(_mx_map_badge(aseco))
+        xml.append(_mx_map_badge(aseco, y=.4))
     elif _cfg.img_tmx_logo_normal and (url := _tmx_page_url(aseco)):
         xml.append(f'<quad posn="41.25 0.08 0" sizen="7 4" image="{_cfg.img_tmx_logo_normal}" imagefocus="{_cfg.img_tmx_logo_focus}" url="{url}"/>')
     xml.extend(['</frame></frame></manialink></manialinks>'])

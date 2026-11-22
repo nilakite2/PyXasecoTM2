@@ -11,6 +11,7 @@ from .player_hud import EDITOR, PANEL_PREVIEW
 from pyxaseco.core.widget_delivery import deliver_ui, is_score_phase
 from pyxaseco.helpers import clean_tm_text
 from pyxaseco.maniaplanet_client import CPLIVE_MATCHED_PAGES
+from pyxaseco.maniaplanet_ui import SINGLE_CARD_COLOR
 
 
 logger = logging.getLogger(__name__)
@@ -293,6 +294,10 @@ def style_xml(xml, palette, *, maniaplanet=False):
                   and len(size) == 2 and size[0] > 70 and len(pos) == 3 and pos[0] == .8):
                 role = 'header' if node.get('bgcolor', '').upper() == '29F9' else 'background'
                 node.set('bgcolor', palette[role])
+                changed = True
+            elif (node.get('bgcolor') == SINGLE_CARD_COLOR and size == [80.4, 55.7]
+                  and pos[:2] == [-.2, .2]):
+                node.set('bgcolor', palette['background'])
                 changed = True
     changed |= _normalise_headers(root, palette)
     for page in root.iter('manialink'):

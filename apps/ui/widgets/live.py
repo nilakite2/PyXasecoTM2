@@ -4,7 +4,7 @@ import logging
 from typing import TYPE_CHECKING
 from ..internal.utils import _digest_entries, _handle_special_chars, _safe_ml_text
 
-from pyxaseco.helpers import format_time
+from pyxaseco.helpers import format_widget_time
 from pyxaseco.models import Gameinfo
 
 from ..config import WidgetCfg, _state, _effective_mode
@@ -115,7 +115,7 @@ def _live_metric(aseco, item: dict, cfg: WidgetCfg, plimit: int) -> str:
         score = int(item.get('Score', 0) or 0)
         if cfg.display_type == 'time':
             best = int(item.get('BestTime', 0) or 0)
-            return format_time(best) if best > 0 else '--'
+            return format_widget_time(best) if best > 0 else '--'
 
         remaining = max(plimit - score, 0) if plimit > 0 else 0
         return (
@@ -128,7 +128,7 @@ def _live_metric(aseco, item: dict, cfg: WidgetCfg, plimit: int) -> str:
     if mode == Gameinfo.LAPS:
         if cfg.display_type == 'time':
             best = _intish(item.get('BestTime', 0), 0)
-            return format_time(best) if best > 0 else '--'
+            return format_widget_time(best) if best > 0 else '--'
 
         # XAseco Eyepiece uses the live-ranking Score field for LAPS progress.
         # Some Python server payloads still expose checkpoint arrays, so keep
@@ -150,7 +150,7 @@ def _live_metric(aseco, item: dict, cfg: WidgetCfg, plimit: int) -> str:
     best = _intish(item.get('BestTime', 0), 0)
     if best <= 0:
         best = _intish(item.get('Score', 0), 0)
-    return format_time(best) if best > 0 else '--'
+    return format_widget_time(best) if best > 0 else '--'
 
 
 def _live_entries_for(aseco, login: str, cfg: WidgetCfg, plimit: int, include_no_record=True) -> list:

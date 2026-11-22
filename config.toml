@@ -7,7 +7,7 @@ ipaddress = []
 
 [tmserver]
 login = "SuperAdmin"
-password = ""
+password = "SuperAdmin"
 ip = "127.0.0.1"
 port = 5000
 timeout = 10
@@ -15,13 +15,22 @@ timeout = 10
 [database]
 host = "127.0.0.1"
 port = 3306
-name = "pyxasecomp"
-user = "pyxasecomp"
+name = "aseco"
+user = "root"
 password = ""
 
 [dedimania]
 login = ""
 password = ""
+nation = ""
+
+[records_wrmania]
+# Optional overrides. Blank uses the connected dedicated login, password from
+# UserData/Config/dedicated_cfg.default.txt, and the server zone for its nation.
+# A relative dedicated_cfg path is relative to the controller folder.
+dedicated_cfg = ""
+server_login = ""
+server_password = ""
 nation = ""
 
 [mania_karma]

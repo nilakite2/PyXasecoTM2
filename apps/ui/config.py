@@ -601,7 +601,6 @@ def _load_config(aseco: 'Aseco') -> None:
     _state.dedi = _parse_gm_widgets(root, 'DEDIMANIA_RECORDS', 'Dedimania Records')
     _state.live = _parse_gm_widgets(root, 'LIVE_RANKINGS', 'Live Rankings', live=True)
 
-    # Stunts shares this slot with optional Ultimania; Dedimania guards its own view.
 
     # ── Bar widgets (Phase 2) ─────────────────────────────────────────────
 

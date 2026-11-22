@@ -89,7 +89,8 @@ def controller_config_root(path: Path) -> Path | None:
     for root in parents:
         relative = path.relative_to(root)
         if (len(relative.parts) == 1 or relative.parts[0] == 'apps') and (
-                (root / 'config.toml').is_file() and (root / 'apps.toml').is_file()):
+                (root / 'config.toml').is_file()
+                and any((root / name).is_file() for name in ('apps.mp.toml', 'apps.toml'))):
             return root
     return None
 

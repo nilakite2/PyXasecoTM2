@@ -102,9 +102,6 @@ _get_trial_track = _optional_view('records_trial', '_get_trial_track', lambda: N
 
 _is_trial_track_active = _optional_view('records_trial', '_is_trial_track_active', bool)
 
-_is_ultimania_track_active = _optional_view('records_ultimania', '_is_ultimania_track_active', bool)
-_draw_ultimania_player = _optional_view('records_ultimania', '_draw_ultimania_player', lambda: None)
-_open_ultimania_window = _optional_view('records_ultimania', '_open_ultimania_window', lambda: None)
 
 _is_wrmania_visible = _optional_view('records_wrmania', '_is_wrmania_visible', bool)
 _draw_wrmania_player = _optional_view('records_wrmania', '_draw_wrmania_player', lambda: None)

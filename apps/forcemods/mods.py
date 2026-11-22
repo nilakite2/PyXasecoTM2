@@ -1,4 +1,4 @@
-"""TMF environment/mod validation and native forced-mod settings."""
+"""Environment/mod validation and native forced-mod settings."""
 
 from dataclasses import dataclass
 from urllib.parse import urlsplit
@@ -7,17 +7,19 @@ from pyxaseco.app_config import as_bool
 
 
 ENVIRONMENTS = ('Stadium', 'Island', 'Speed', 'Rally', 'Bay', 'Coast', 'Alpine')
+MP_ENVIRONMENTS = ('Canyon', 'Stadium', 'Valley', 'Lagoon')
 MODES = ('off', 'sequential', 'random')
 MAX_MODS = 1000
 
 
-def environment(value):
+def environment(value, environments=ENVIRONMENTS):
     name = str(value).strip().lower()
-    names = {env.lower(): env for env in ENVIRONMENTS}
-    names.update({'desert': 'Speed', 'snow': 'Alpine'})
-    names.update({str(i + 1): env for i, env in enumerate(ENVIRONMENTS)})
+    names = {env.lower(): env for env in environments}
+    if environments == ENVIRONMENTS:
+        names.update({'desert': 'Speed', 'snow': 'Alpine'})
+    names.update({str(i + 1): env for i, env in enumerate(environments)})
     if name not in names:
-        raise ValueError('Unknown TMF environment: ' + str(value))
+        raise ValueError('Unknown environment: ' + str(value))
     return names[name]
 
 
@@ -29,7 +31,7 @@ def mode(value):
     return name
 
 
-def mod_url(value):
+def mod_url(value, *, maniaplanet=False):
     if not isinstance(value, str) or not value or len(value) > 2048:
         raise ValueError('Supply a direct HTTP mod ZIP URL.')
     try:
@@ -41,7 +43,7 @@ def mod_url(value):
         valid = False
     if not valid or any(ch.isspace() or ord(ch) < 32 or ch in '$[]<>"' for ch in value):
         raise ValueError('Supply a direct HTTP mod ZIP URL without credentials, spaces or formatting.')
-    return 'http://' + value.split('://', 1)[1]
+    return value if maniaplanet else 'http://' + value.split('://', 1)[1]
 
 
 @dataclass(frozen=True)
@@ -53,7 +55,8 @@ class Mod:
     enabled: bool
 
 
-def parse_mods(section):
+def parse_mods(section, *, maniaplanet=False):
+    environments = MP_ENVIRONMENTS if maniaplanet else ENVIRONMENTS
     rows = section.get('mods', {})
     if not isinstance(rows, dict) or len(rows) > MAX_MODS:
         raise ValueError(f'forcemods.mods must be a table with at most {MAX_MODS} entries.')
@@ -66,15 +69,15 @@ def parse_mods(section):
             raise ValueError('Invalid ForceMods name: ' + key)
         envs = row.get('environments', '')
         if isinstance(envs, str):
-            envs = envs.split(',') if envs.strip() else list(ENVIRONMENTS)
+            envs = envs.split(',') if envs.strip() else list(environments)
         if not isinstance(envs, list) or not envs:
             raise ValueError('Mod environments must be a comma-separated string or non-empty list: ' + key)
-        targets = tuple(dict.fromkeys(environment(env) for env in envs))
+        targets = tuple(dict.fromkeys(environment(env, environments) for env in envs))
         enabled = as_bool(row.get('enabled', True))
         url = row.get('url', '')
         if not isinstance(url, str):
             raise ValueError('Mod URL must be a string: ' + key)
-        url = mod_url(url) if url or enabled else ''
+        url = mod_url(url, maniaplanet=maniaplanet) if url or enabled else ''
         result[key] = Mod(key, name.strip(), url, targets, enabled)
     return result
 

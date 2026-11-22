@@ -147,6 +147,6 @@ def initialize_bridge(root: str | Path, *, instance_id=None, enable=False,
         if enable:
             if not (root / 'apps/management_bridge/app.py').is_file():
                 raise ManagementError('Optional management_bridge app is not installed')
-            move_loadout_entry(root / 'apps.toml', 'app/management_bridge', True)
+            move_loadout_entry(root / operations.loadout_file, 'app/management_bridge', True)
     return {'instance_id': identity['instance_id'], 'credential_created': created,
             'enabled_for_next_start': enable, 'started': False, 'token': 'not displayed'}

@@ -6,8 +6,8 @@ mode = 'sequential'
 override = false
 
 # Add one named table per mod. Entries rotate in file order for each environment.
-# Empty environments = all seven TMF environments. Names or IDs 1-7 are accepted.
-# HTTPS input is converted to HTTP: the host must serve the ZIP over plain HTTP.
+# MP environments: Canyon, Stadium, Valley, Lagoon (IDs 1-4).
+# Empty environments = all four. Use a direct mod ZIP URL.
 # Examples (replace the URLs before enabling):
 # [forcemods.mods.stadium_one]
 # name = 'My Stadium Mod'
@@ -18,7 +18,7 @@ override = false
 # [forcemods.mods.multi_environment]
 # name = 'Another Mod'
 # url = 'http://your-host.example/mods/multi.zip'
-# environments = 'Island,Speed,Alpine'
+# environments = 'Canyon,Valley,Lagoon'
 # enabled = false
 
 [forcemods.mods]

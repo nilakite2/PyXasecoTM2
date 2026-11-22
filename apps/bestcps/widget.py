@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 from pyxaseco.models import Gameinfo
 from pyxaseco.app_config import AppSetting, AppSettingsSchema, as_float, as_int, bind_app_settings
 from pyxaseco.core.config import display_path
+from pyxaseco.helpers import format_widget_time
 
 if TYPE_CHECKING:
     from pyxaseco.core.aseco import Aseco
@@ -127,10 +128,7 @@ def _load_config(aseco: 'Aseco'):
 
 
 def _format_cp_time(ms: int) -> str:
-    minutes = ms // 60000
-    seconds = (ms % 60000) // 1000
-    centis = (ms % 1000) // 10
-    return f'{minutes}:{seconds:02d}.{centis:02d}'
+    return format_widget_time(ms)
 
 
 def _esc(value: str) -> str:

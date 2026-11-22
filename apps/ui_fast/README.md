@@ -1,11 +1,11 @@
 # FAST UI
 
 Optional compact interface inspired by FAST 3, originally written by Gilles Masson
-(Slig). Uses TMF's native panel skins and PyXaseco's existing records and commands.
+(Slig). Uses ManiaLink panel skins and PyXaseco's existing records and commands.
 
 ## Enable
 
-Move `app/ui_fast` from the disabled to the enabled list in `apps.toml`, then
+Move `app/ui_fast` from the disabled to the enabled list in `apps.mp.toml`, then
 restart with `//pyres`. Requires `platform_ui`, `ui` and `records_local`.
 
 - `/uistyle list`: select **FAST**.
@@ -14,7 +14,7 @@ restart with `//pyres`. Requires `platform_ui`, `ui` and `records_local`.
 - `/uistyle default`: follow the server's default UI.
 - `/fastui`: open the FAST menu when this style is active.
 - `/fastui panels`: see which FAST panels are visible to you.
-- `/fastui toggle <map|records|splits|team>`: hide or show a panel for this
+- `/fastui toggle <map|records|splits>`: hide or show a panel for this
   connection. This does not change anyone else's UI or re-enable a server-disabled panel.
 
 Selection uses the existing saved player UI preference. Other players may keep
@@ -34,9 +34,9 @@ Classic or Modern. Loading this app does not change the server's default style.
 - Checkpoint gaps to the leader and nearby racers in those same modes.
 - Estimated native Team round points and individual contributions.
 - Optional manual-start, multi-map Team matches with totals and recent map history.
-- F7 visibility and race/score transitions.
+- F8 visibility and race/score transitions.
 
-Trial, RPG, Dedimania, Ultimania and Mania Records are offered only when their apps
+Trial, RPG and Dedimania are offered only when their apps
 are loaded and their current-map data is available. This app does not submit
 records or make additional external API requests.
 
@@ -140,3 +140,8 @@ not ported. Multi-map Team scoring uses the service described above.
 FAST 3 UI design and original PHP source: Gilles Masson (Slig),
 <https://github.com/Slig06/Fast3>. Python adaptation: PyXaseco contributors.
 Distributed under PyXaseco's GNU GPL terms; see the controller's `LICENSE`.
+
+## ManiaPlanet Scope
+
+On MP, FAST's TimeAttack menu, record selection and split HUD are available.
+The Team Match engine and `//tmatch` are not registered.

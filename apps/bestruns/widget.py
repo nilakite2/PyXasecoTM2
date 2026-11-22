@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 from pyxaseco.models import Gameinfo
 from pyxaseco.app_config import AppSetting, AppSettingsSchema, as_float, as_int, bind_app_settings
 from pyxaseco.core.config import display_path
-from pyxaseco.helpers import safe_manialink_text
+from pyxaseco.helpers import format_widget_time, safe_manialink_text
 
 if TYPE_CHECKING:
     from pyxaseco.core.aseco import Aseco
@@ -216,10 +216,7 @@ def LoadConfig_bestruns(aseco: "Aseco"):
 
 
 def _format_score(ms: int) -> str:
-    minutes = ms // 60000
-    seconds = (ms - minutes * 60000) // 1000
-    centis = (ms - minutes * 60000 - seconds * 1000) // 10
-    return f"{minutes}:{seconds:02d}.{centis:02d}"
+    return format_widget_time(ms)
 
 
 def _is_score_mode(aseco: "Aseco") -> bool:

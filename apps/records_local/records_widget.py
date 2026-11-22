@@ -158,9 +158,6 @@ async def _draw_local_player(aseco: 'Aseco', login: str):
     preset_id = preset.id if preset is not None else 0
     entries = _close_to_you(all_recs, login, cfg.entries, cfg.topcount, player_nick,
                             include_no_record=preset is None or preset.base != 1)
-    if getattr(aseco, 'is_maniaplanet', False):
-        entries = [{**entry, 'score': aseco.format_time(entry['score'])} if entry['score'] is not None
-                   else entry for entry in entries]
     xml = renderer(player, ml_id=ML_LOCAL, cfg=cfg, login=login,
                    entries=[{**entry, 'nickname': ui.clean_nickname(entry.get('nickname', ''))} for entry in entries],
                    online=online, mode=mode, mark_online=ui.marks_online()) if callable(renderer) else None

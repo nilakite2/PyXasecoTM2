@@ -66,10 +66,11 @@ class ManagementOperations:
     def __init__(self, root: str | Path):
         self.root = controller_root(root)
         self.config = ConfigStore(self.root)
+        self.loadout_file = 'apps.mp.toml' if (self.root / 'apps.mp.toml').is_file() else 'apps.toml'
 
     def apps(self, loadout: dict | None = None, *, sources: dict | None = None) -> list[AppInfo]:
         if loadout is None:
-            loadout = tomllib.loads((self.root / 'apps.toml').read_text(encoding='utf-8'))
+            loadout = tomllib.loads((self.root / self.loadout_file).read_text(encoding='utf-8'))
         enabled, disabled = _loadout(loadout)
         names = {entry.split('/')[1] for entry in enabled + disabled}
         names.update(path.parent.name for path in (self.root / 'apps').glob('*/app.py')
@@ -137,14 +138,14 @@ class ManagementOperations:
 
     def set_config(self, relative: str, path: tuple[str, ...], value, *, expected: str,
                    offline: bool = False):
-        if self.config.path(relative).name == 'apps.toml':
+        if self.config.path(relative).name in ('apps.toml', 'apps.mp.toml'):
             raise ManagementError('Use app-state for loadout changes so dependency/core checks are applied')
         with self._offline(offline):
             return self._save_config(relative, path, value, expected=expected)
 
     def validate_config_edit(self, relative: str, path: tuple[str, ...], value, *, expected: str):
         file = self.config.path(relative)
-        if file.name == 'apps.toml':
+        if file.name in ('apps.toml', 'apps.mp.toml'):
             raise ManagementError('Use app-state for loadout changes')
         text, current = self.config.read(relative)
         if current != expected:
@@ -201,7 +202,7 @@ class ManagementOperations:
 
     def _restore_config(self, relative, backup, *, expected):
         file = self.config.path(relative)
-        if file.name == 'apps.toml':
+        if file.name in ('apps.toml', 'apps.mp.toml'):
             raise ManagementError('Use app-state for loadout changes, not a whole-file restore')
         saved = self._config_backups(file).get(backup)
         if saved is None:
@@ -240,7 +241,7 @@ class ManagementOperations:
             result = self.validate(tomllib.loads(text))
             if not result['valid']:
                 raise ManagementError('; '.join(result['errors']))
-        return update_file(self.root / 'apps.toml', transform, expected=expected, validator=check, root=self.root)
+        return update_file(self.root / self.loadout_file, transform, expected=expected, validator=check, root=self.root)
 
 
 def masked(data):

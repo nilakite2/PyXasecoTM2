@@ -7,8 +7,9 @@ from typing import TYPE_CHECKING, Any
 
 from apps.platform_ui.hud_layout import POSITION_STEPS
 from pyxaseco.helpers import display_manialink_multi
-from pyxaseco.management.app_policy import MANAGEABLE_STANDALONE_APPS, PROTECTED_STANDALONE_APPS
+from pyxaseco.management.app_policy import PROTECTED_STANDALONE_APPS
 from .service import (
+    LOADOUT_TOGGLE_APPS,
     _with_config_snapshot, get_service, _root_dir, read_toml,
     _discover_config_apps, _config_items_for_app, _standalone_loadout_state, _standalone_app_names,
     _standalone_status, _runtime_status, _config_item_target_info_from_data, _config_item_state_from_info,
@@ -187,9 +188,9 @@ def _show_apps_manager_window(aseco: 'Aseco', admin) -> None:
 
     rows.append(['{#highlite}Standalone Optional Apps', '', '', '', '', ''])
     standalone_names = [name for name in _standalone_app_names() if _platform_supports_app(aseco, name)]
-    standalone_names.sort(key=lambda name: (0 if _standalone_loadout_state(aseco, name) != 'disabled' else 1, MANAGEABLE_STANDALONE_APPS.get(name, name).lower()))
+    standalone_names.sort(key=lambda name: (0 if _standalone_loadout_state(aseco, name) != 'disabled' else 1, LOADOUT_TOGGLE_APPS[name].lower()))
     for app_name in standalone_names:
-        label = MANAGEABLE_STANDALONE_APPS.get(app_name, app_name)
+        label = LOADOUT_TOGGLE_APPS[app_name]
         status = _standalone_status(aseco, app_name)
         primary = ''
         secondary = ''

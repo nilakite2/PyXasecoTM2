@@ -5,9 +5,10 @@ from __future__ import annotations
 import shutil
 from typing import TYPE_CHECKING, Any
 
-from pyxaseco.management.app_policy import MANAGEABLE_STANDALONE_APPS, PROTECTED_STANDALONE_APPS
+from pyxaseco.management.app_policy import PROTECTED_STANDALONE_APPS
 from pyxaseco.toml_tools import move_loadout_entry
 from .service import (
+    LOADOUT_TOGGLE_APPS,
     get_service, _apps_toml_path, _apps_dir, _normalize_app_name, _can_configure_app,
     _discover_config_apps, _config_item_owner, _is_masteradmin, _standalone_loadout_state,
     _standalone_paths, _is_manageable_standalone_app, _standalone_status, _archive_destination,
@@ -357,8 +358,7 @@ async def _dispatch_apps_command(aseco: 'Aseco', login: str, admin, args: list[s
         if not name:
             await _reply_apps_usage(aseco, login)
             return
-        # Dedimania has editable settings but also supports a service loadout toggle.
-        if name in config_apps and name not in MANAGEABLE_STANDALONE_APPS:
+        if name in config_apps and name not in LOADOUT_TOGGLE_APPS:
             await _reply(aseco, login, '{#server}> {#error}Use {#highlite}/admin apps config ' + name + '{#error} for merged features and UI-owned items.')
             return
         if _is_manageable_standalone_app(aseco, name):

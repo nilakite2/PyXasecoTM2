@@ -38,7 +38,8 @@ MANIALINK_ARG = {'SendDisplayManialinkPage': 0, 'SendDisplayManialinkPageToLogin
 TMF_SCALE_X, TMF_SCALE_Y = 2.5, 1.875  # Legacy +/-64 x +/-48 to MP4 +/-160 x +/-90.
 _COLOR_ATTRIBUTES = ('bgcolor', 'bgcolorfocus', 'textcolor', 'focusareacolor1', 'focusareacolor2')
 _EYEPIECE_PANEL_ACTIONS = {'91805': '91802', '91812': '91805'}  # Track overview, local records.
-CPLIVE_MATCHED_PAGES = frozenset(('3', '5834290', '342312'))  # Admin, Banner, Best Finishes.
+# Admin, Banner, Best Finishes, Best Runs, Best Secs, Best CPs, Neighborhood, Alternate Scoretable.
+CPLIVE_MATCHED_PAGES = frozenset(('3', '5834290', '342312', '342313', '0815470000122', '123123456', '86003', '86105'))
 CPLIVE_BACKGROUND = ('BgsPlayerCard', 'BgCard')
 _MENU_SKINS = {
     '3830000': {('Bgs1InRace', 'NavButton'): ('293745E8', '384B5EFF')},
@@ -54,7 +55,10 @@ def map_info(data):
     if not isinstance(data, dict):
         return data
     uid = data.get('Uid') or data.get('UId')
-    return dict(data, UId=uid, Uid=uid)
+    result = dict(data, UId=uid, Uid=uid)
+    if not result.get('Environnement') and result.get('Environment'):
+        result['Environnement'] = result['Environment']
+    return result
 
 
 def _convert_legacy_page(page):

@@ -40,7 +40,6 @@ Each app guide explains its purpose, commands, configuration, changes and credit
 | [Hide Chat](hidechat/README.md) | Personal native-chat visibility. |
 | [JFreu](jfreu/README.md) | Admission, spectator and server-message tools. |
 | [Jukebox](jukebox/README.md) | Map lists, requests and TMX searches. |
-| [Management Bridge](management_bridge/README.md) | Local Administrator Console connection. |
 | [Match Overlay](match_overlay/README.md) | Team match/series scoreboard overlay. |
 | [Platform Core](platform_core/README.md) | Shared database and gameplay services. |
 | [Platform UI](platform_ui/README.md) | Styles, panels and personal preferences. |
@@ -52,7 +51,6 @@ Each app guide explains its purpose, commands, configuration, changes and credit
 | [Mania Records](records_wrmania/README.md) | WRMania submissions and fallback global-record widget. |
 | [RPG Records](records_rpg/README.md) | RPG API records and replay uploads. |
 | [Trial Records](records_trial/README.md) | Trial API records and finish submissions. |
-| [Ultimania Records](records_ultimania/README.md) | Stunts records and replay submissions. |
 | [Sequential Info Messages](seqinfomsg/README.md) | Rotating timed chat announcements. |
 | [Server Info](server_info/README.md) | Server, runtime and integration information. |
 | [Server Neighborhood](server_neighborhood/README.md) | Status and join links for linked local servers. |

@@ -43,5 +43,5 @@ must match the configured MariaDB/MySQL installation.
 
 Localdatabase: Florian Schnell, with updates by Xymph.
 XAseco rounds, track, song/mod, chatlog, checkpoints, donations and round points: Xymph.
-RASP: Xymph and AssemblerManiac. FreeZone: NADEO.
+RASP: Xymph and AssemblerManiac.
 PyXaseco adaptation: Nila / PyXaseco project.

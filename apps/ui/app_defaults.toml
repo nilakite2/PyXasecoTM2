@@ -500,8 +500,8 @@ height = 6.5
 text_color = "FC0F"
 background_color = ""
 roc_server = true
-pos_x = 39.6
-pos_y = 29
+pos_x = 39.8
+pos_y = 28.3
 background_style = "BgsPlayerCard"
 background_substyle = "ProgressBar"
 
@@ -511,8 +511,8 @@ width = 4.6
 height = 6.5
 text_color = "FC0F"
 background_color = ""
-pos_x = 44.3
-pos_y = 29
+pos_x = 44.5
+pos_y = 28.3
 background_style = "BgsPlayerCard"
 background_substyle = "ProgressBar"
 
@@ -533,8 +533,8 @@ width = 4.6
 height = 6.5
 text_color = "FC0F"
 background_color = ""
-pos_x = 39.6
-pos_y = 35.6
+pos_x = 39.8
+pos_y = 35.0
 background_style = "BgsPlayerCard"
 background_substyle = "ProgressBar"
 
@@ -544,8 +544,8 @@ width = 4.6
 height = 6.5
 text_color = "FC0F"
 background_color = ""
-pos_x = 34.9
-pos_y = 29
+pos_x = 35.1
+pos_y = 28.3
 background_style = "BgsPlayerCard"
 background_substyle = "ProgressBar"
 
@@ -555,8 +555,8 @@ width = 4.6
 height = 6.5
 text_color = "FC0F"
 background_color = ""
-pos_x = 34.9
-pos_y = 35.6
+pos_x = 35.1
+pos_y = 35.0
 background_style = "BgsPlayerCard"
 background_substyle = "ProgressBar"
 
@@ -631,8 +631,8 @@ height = 6.5
 text_color = "FC0F"
 
 [ui.favorite_widget.race]
-pos_x = 44.3
-pos_y = 35.6
+pos_x = 44.5
+pos_y = 35.0
 background_style = "BgsPlayerCard"
 background_substyle = "ProgressBar"
 
@@ -899,8 +899,8 @@ local_records = true
 live_rankings = true
 
 [ui.messages]
-widgets_disabled = "{#server}>> Your record widgets are now hidden, press F7 to reactivate them."
-widgets_enabled = "{#server}>> Your record widgets are now shown, press F7 to hide them."
+widgets_disabled = "{#server}>> Your record widgets are now hidden, press F8 to reactivate them."
+widgets_enabled = "{#server}>> Your record widgets are now shown, press F8 to hide them."
 widgets_preference_disabled = "{#server}>> Your record widgets are now permanent hidden and your preference was saved, type {#highlite}/eyepiece show{#server} to reactivate them."
 widgets_preference_enabled = "{#server}>> Your record widgets are now permanent shown and your preference was saved, type {#highlite}/eyepiece hide{#server} to hide them."
 toggling_disabled = "{#server}>> Sorry, you can not toggle the record widgets at the moment. There are too many players on the server, so they are in static mode now."
@@ -1040,10 +1040,10 @@ substyle = "LvlYellow"
 
 [ui.allbutton]
 enabled = false
-main_pos_x = -61
+main_pos_x = -18.0
 main_pos_y = -45.1
-submenu_pos_x = -39
-submenu_pos_y = -28.2
+submenu_pos_x = 11.0
+submenu_pos_y = -42.8
 
 [ui.banner]
 enabled = true

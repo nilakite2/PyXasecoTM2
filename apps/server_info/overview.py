@@ -72,7 +72,7 @@ def enabled_integrations(aseco):
         elif getattr(karma_config, 'mx_karma_key', ''):
             rows.append(('mx_karma', 'MXKarma'))
     for app, label in (('records_trial', 'Trial Records'), ('records_rpg', 'RPG Records'),
-                       ('records_ultimania', 'Ultimania Records'), ('records_wrmania', 'Mania Records')):
+                       ('records_wrmania', 'Mania Records')):
         service = _module(f'apps.{app}.service')
         if app in active and service is not None and service.is_enabled():
             rows.append((app, label))

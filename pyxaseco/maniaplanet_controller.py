@@ -17,7 +17,11 @@ APPS = frozenset(('platform_core', 'help', 'records_local', 'players', 'mp_panel
                   'tmx', 'server_info', 'bestfinishes', 'ztrack', 'discord', 'social_chat',
                   'best_cp_times', 'checkpoint_tools', 'platform_ui', 'ui', 'admin',
                   'apps_manager', 'jukebox', 'voting', 'jfreu', 'flexitime', 'pyxa_stats',
-                  'records_dedimania', 'records_trial', 'records_rpg', 'endlesstmxr'))
+                  'records_dedimania', 'records_trial', 'records_rpg', 'records_wrmania', 'endlesstmxr',
+                  'alternate_scoretable', 'bestcps', 'bestruns', 'bestsecs', 'cgps', 'dbtools',
+                  'forcemods', 'hidechat', 'management_bridge', 'quotes', 'seqinfomsg',
+                  'server_admin_bridge', 'server_neighborhood',
+                  'serverstats', 'sponsor_banner', 'ui_fast'))
 MP_CALLBACKS = {
     'playerconnect': '_cb_player_connect',
     'playerdisconnect': '_cb_player_disconnect',

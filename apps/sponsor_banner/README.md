@@ -6,7 +6,7 @@ Optional rotating sponsor images. The entire image opens the sponsor's website;
 there is no heading, separate link button or chat announcement.
 
 Defaults: ManiaKarma-sized area (15.76 x 10.75), top-centre position, one sponsor
-every 30 seconds, visible in racing and on the score screen. F7 hides/restores
+every 30 seconds, visible in racing and on the score screen. F8 hides/restores
 the banner for that player without affecting anyone else.
 
 ## Commands

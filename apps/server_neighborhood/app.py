@@ -151,9 +151,12 @@ class ServerNeighborhoodApp(App):
         if mode in views.MODES:
             self.last_mode = mode
         track = getattr(server, 'challenge', None)
+        mp = getattr(aseco, 'is_maniaplanet', False)
+        from pyxaseco.maniaplanet_callbacks import server_title
         def short(obj, name, default=''):
             return str(getattr(obj, name, default) or default)[:160]
         return {'login': login, 'name': short(server, 'name', login), 'updated': time(), 'online': True,
+                'game': 'TM2' if mp else 'TMF', 'title_id': server_title(aseco) if mp else '',
                 'mode': self.last_mode, 'pack': short(server, 'packmask'),
                 'players': len(players) - spectators, 'spectators': spectators,
                 'maxplayers': int(getattr(server, 'maxplay', 0)),
@@ -180,7 +183,7 @@ class ServerNeighborhoodApp(App):
                 storage.write(folder, snapshot, publisher)
             except (OSError, ValueError, ET.ParseError) as error:
                 errors.append(str(error))
-            rows, read_errors = storage.scan(folder, logins)
+            rows, read_errors = storage.scan(folder, logins, game=snapshot['game'])
             return rows, errors + read_errors
 
         async def operation(envelope):

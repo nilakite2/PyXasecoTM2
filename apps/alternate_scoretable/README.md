@@ -15,11 +15,14 @@ The Rankings bar button opens the same window. Click a player for details.
 
 ## Configuration
 
-Enable `app/alternate_scoretable` in `apps.toml` and restart.
+Enable `app/alternate_scoretable` in `apps.mp.toml` and restart.
 Use `app_defaults.toml` or `//apps config alternate_scoretable` for rows, columns,
 automatic display, timing and the bar button's position/size.
-Finish popups default to a three-second delay and eight-second duration;
-end-of-map popups default to a five-second delay and twenty-second duration.
+Finish popups are off by default. When enabled with `show_at_finish`, they
+default to a three-second delay and eight-second duration. End-of-map popups
+are configured separately and still default to a five-second delay and
+twenty-second duration. On existing installs, turn `show_at_finish` off via
+`//apps config alternate_scoretable` to override a previously saved value.
 
 ## Changes And Limits
 
@@ -28,8 +31,8 @@ end-of-map popups default to a five-second delay and twenty-second duration.
 - PBs use saved local records, including results beyond the leaderboard limit.
   Finish counts and session bests cover the current map since app startup.
 - Automatic display replaces the corresponding native score panels. Closing,
-  expiry, F7 or disabling the app restores their configured visibility.
-- F7 hides the bar button and closes the window; `/scoretable` remains available.
+  expiry, F8 or disabling the app restores their configured visibility.
+- F8 hides the bar button and closes the window; `/scoretable` remains available.
 - Ladder rank is cached Nadeo rank. Ladder-point gains, player avatars and the
   original plugin's custom place announcements are not included.
 - No additional database table or external service is required.

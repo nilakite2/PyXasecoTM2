@@ -14,7 +14,7 @@ from pyxaseco.core.playlist import playlist
 from pyxaseco.core.widget_delivery import is_score_phase
 from pyxaseco.helpers import _send_multipage
 
-from .mods import ENVIRONMENTS, MODES, MAX_MODS, environment, mode, mod_url, native_settings, parse_mods, signature
+from .mods import ENVIRONMENTS, MP_ENVIRONMENTS, MODES, MAX_MODS, environment, mode, mod_url, native_settings, parse_mods, signature
 from . import storage
 
 
@@ -42,6 +42,8 @@ class ForceModsApp(App):
                          entry_modules=('app/forcemods',), settings_schema=SCHEMA)
         self.enabled, self.mode, self.override = False, 'off', False
         self.mods = {}
+        self.mp = False
+        self.environments = ENVIRONMENTS
         self.selected = {}
         self.baseline = None
         self.queued = None
@@ -64,9 +66,17 @@ class ForceModsApp(App):
 
     def configure(self, aseco):
         bound = bind_app_settings(SCHEMA, getattr(aseco, '_base_dir', None))
-        configured_mode, mods = mode(bound.values['mode']), parse_mods(bound.section)
+        mp = bool(getattr(aseco, 'is_maniaplanet', False))
+        configured_mode, mods = mode(bound.values['mode']), parse_mods(bound.section, maniaplanet=mp)
+        self.mp, self.environments = mp, MP_ENVIRONMENTS if mp else ENVIRONMENTS
         self.enabled, self.mode, self.override = bound.values['enabled'], configured_mode, bound.values['override']
         self.mods = mods
+
+    def environment(self, value):
+        return environment(value, self.environments)
+
+    def mod_url(self, value):
+        return mod_url(value, maniaplanet=self.mp)
 
     async def startup(self, context):
         self.configure(context.aseco)
@@ -123,13 +133,13 @@ class ForceModsApp(App):
             return
         if info is None:
             info = await self.target_info(aseco, next_map=is_score_phase(aseco))
-        env = environment(info.get('Environnement', ''))
+        env = self.environment(info.get('Environnement') or info.get('Environment', ''))
         uid = str(info.get('UId') or info.get('Uid') or '')
         if not uid:
             raise ValueError('Target track UID is unavailable; cannot check per-track assignments.')
         link = await storage.current_link(await self.pool(aseco), uid)
         if link:
-            await self.write_payload(aseco, (True, [{'Env': env, 'Url': mod_url(link)}]))
+            await self.write_payload(aseco, (True, [{'Env': env, 'Url': self.mod_url(link)}]))
             logger.info('[ForceMods] Queued track-specific mod for %s (%s)', uid, env)
             return
         selected = self.choose(env, advance) if self.mode != 'off' else None
@@ -195,7 +205,7 @@ class ForceModsApp(App):
                 elif action == 'mod':
                     mod = self.mods[value]
                     if not mod.enabled:
-                        mod_url(mod.url)
+                        self.mod_url(mod.url)
                     self.mods = {**self.mods, value: replace(mod, enabled=not mod.enabled)}
                 else:
                     raise ValueError('Unknown ForceMods action.')
@@ -230,12 +240,12 @@ class ForceModsApp(App):
                     ['Override map mods', cell('On', 'override', True), cell('Off', 'override', False), 'On' if self.override else 'Off'],
                     ['Saved settings', cell('Reload', 'reload'), 'App enabled' if self.enabled else 'App disabled', ''],
                     ['Changes apply at the next map load/restart', '', '', '']]
-            for name in ENVIRONMENTS:
+            for name in self.environments:
                 mods = [mod for mod in self.mods.values() if name in mod.environments]
                 rows.append([name, cell('Mod list', 'env', name), f'{sum(mod.enabled for mod in mods)}/{len(mods)} enabled', ''])
             title, widths = 'ForceMods - Server-wide settings', [1.4, .53, .29, .29, .29]
         else:
-            env = environment(env)
+            env = self.environment(env)
             rows = [[cell('Back to settings', 'settings'), '', '']]
             for mod in self.mods.values():
                 if env in mod.environments:
@@ -279,7 +289,7 @@ class ForceModsApp(App):
             elif lowered in (*MODES, 'disabled', 'seq', '0', '1', '2'):
                 await self.change(aseco, player, 'mode', lowered)
             else:
-                await self.show(aseco, player, environment(text))
+                await self.show(aseco, player, self.environment(text))
                 return
             await self.reply(aseco, player, '{#message}ForceMods settings queued for the next map load/restart. '
                              'Runtime changes last until reload/restart; use //apps config forcemods for saved settings.')
@@ -372,10 +382,10 @@ class ForceModsApp(App):
             if not self.enabled or self.mode == 'off':
                 policy = 'Off (assignment saved)' if row['Link'] else 'Off / map default'
             elif row['Link']:
-                policy = '$l[' + mod_url(row['Link']) + ']Track mod$l'
+                policy = '$l[' + self.mod_url(row['Link']) + ']Track mod$l'
             else:
                 try:
-                    env = environment(row['Environment'])
+                    env = self.environment(row['Environment'])
                     count = sum(mod.enabled and env in mod.environments for mod in self.mods.values())
                     policy = f'Rotation: {count} mod(s)' if count else 'Map default'
                     if count and not self.override:
@@ -405,12 +415,12 @@ class ForceModsApp(App):
             if not map_id:
                 raise ValueError('No current track is available.')
             info = {'Name': track.name, 'Environnement': getattr(track, 'environment', '')}
-            link = mod_url(parts[1]) if len(parts) == 2 else None
+            link = self.mod_url(parts[1]) if len(parts) == 2 else None
         else:
             if action != 'rem' and len(parts) != 3:
                 raise ValueError(TRACK_USAGE)
             map_id, info = parts[1], None
-            link = mod_url(parts[2]) if len(parts) == 3 else None
+            link = self.mod_url(parts[2]) if len(parts) == 3 else None
         async with self.lock:
             pool = await self.pool(aseco)
             if not self.allowed(aseco, player):

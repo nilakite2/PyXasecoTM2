@@ -75,6 +75,7 @@ PAGER_ACTIONS = dict(zip((-4, -3, -2, 0, 1, 2, 3, 4), range(5721210, 5721218)))
 PAGER_ANSWERS = {action: code for code, action in PAGER_ACTIONS.items()}
 CARD = {'style': 'BgsPlayerCard', 'substyle': 'BgCardSystem'}
 TITLE = {'style': 'BgsPlayerCard', 'substyle': 'BgRacePlayerName'}
+SINGLE_CARD_COLOR = '19222DE8'
 WINDOW_TEXT_COLOR = 'F0F3F8FF'
 WINDOW_COLORS = {'{#black}': '$def', '{black}': '$def', '{#welcome}': '$cde'}
 

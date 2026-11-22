@@ -2,11 +2,10 @@
 enabled = false
 api_base = "https://api.wrmania.net"
 # Dedicated-server account, not the XML-RPC SuperAdmin account.
-# Leave these blank to reuse DEDI_LOGIN, DEDI_PASSWORD and DEDI_NATION from .env.
-# Dedimania does not need to be enabled. No credentials are copied into this file.
-# Without DEDI_LOGIN, blank login uses the actual connected dedicated-server login.
+# Optional legacy overrides. Prefer [records_wrmania] in config.toml or .env.
+# Blank uses the connected login, dedicated_cfg.default.txt and server zone.
+# MP never reuses Dedimania or XML-RPC credentials.
 server_login = ""
-# Optional override; WRMANIA_SERVER_PASSWORD in .env takes priority over this field.
 server_password = ""
 nation = ""
 request_timeout = 30
@@ -15,7 +14,7 @@ refresh_interval = 45
 heartbeat_interval = 240
 submit_records = true
 widget_enabled = false
-# false: fallback only; true: replace Dedimania when no RPG/Trial/Ultimania provider is active.
+# false: fallback only; true: replace Dedimania when no RPG/Trial provider is active.
 prefer_widget = false
 # Healthy Dedimania keeps Mania silent. If Dedimania is disabled, Mania announces
 # even when RPG/Trial owns the widget. During a Dedimania outage, announce only
