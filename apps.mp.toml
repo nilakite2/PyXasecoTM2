@@ -31,7 +31,6 @@ disabled = [
 "app/records_dedimania",
 "app/ui_fast",
 "app/sponsor_banner",
-"app/server_admin_bridge",
 "app/match_overlay",
 "app/alternate_scoretable",
 "app/server_neighborhood",

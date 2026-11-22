@@ -1,0 +1,7 @@
+[pyxa_stats]
+enabled = true
+heartbeat_seconds = 240
+recent_keep = 5
+request_timeout = 20
+# Configure PYXASECOMP_STATS_API_BASE in .env to enable publishing.
+# PYXASECOMP_STATS_API_TOKEN is optional unless the website requires a write token.

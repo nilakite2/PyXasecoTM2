@@ -1,0 +1,15 @@
+[best_cp_times_v2]
+
+[best_cp_times_v2.config]
+width = "15"
+height = "18.2"
+rows = 10
+number = "2000"
+custom_ui = "true"
+show_spectators = "true"
+textsize = "1.0"
+textscale = "0.9"
+
+[best_cp_times_v2.config.position]
+x = "36.7"
+y = "-29.3"

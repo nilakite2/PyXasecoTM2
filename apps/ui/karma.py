@@ -1,0 +1,2990 @@
+from __future__ import annotations
+from pyxaseco.core.service_health import observed_response
+
+from pyxaseco.core.widget_delivery import deliver_ui
+
+"""
+mania_karma.py — PyXaseco port of plugins/plugin.mania_karma.php
+"""
+
+import asyncio
+import base64
+import gzip
+import logging
+import math
+import os
+import pathlib
+import time
+import urllib.parse
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
+
+from pyxaseco.helpers import clean_tm_text, strip_colors
+from pyxaseco.app_config import (AppSetting, AppSettingsSchema, as_bool, as_int,
+                                 as_str, bind_app_settings)
+from pyxaseco.app_services import localdb_get_player_id, localdb_get_pool
+from pyxaseco.core.config import display_path
+from pyxaseco.core.retained_delivery import PreparationDeferred
+from apps.tmx.service import (
+    build_public_tmx_track_url as _build_public_tmx_track_url,
+    normalise_tmx_web_url as _normalise_tmx_web_url,
+    tmx_public_host_for_section as _tmx_public_host_for_section,
+)
+from .widgets.common import _bg_attrs, _score_bg_attrs
+from . import karma_mx
+
+if TYPE_CHECKING:
+    from pyxaseco.core.aseco import Aseco
+    from pyxaseco.models import Player
+
+logger = logging.getLogger(__name__)
+
+
+def _as_dict(value, default=None):
+    return value if isinstance(value, dict) else (default if isinstance(default, dict) else {})
+
+
+def _env(name: str, default: str = "") -> str:
+    try:
+        return str(os.environ.get(name, default) or default)
+    except Exception:
+        return default
+
+VERSION = "2.0.1"
+MX_KARMA_SITE = karma_mx.SITE
+MANIALINK_BASE = 911
+
+ML_REMINDER = 91101
+ML_WINDOWS = 91102
+ML_SKELETON = 91103
+ML_MARKER = 91104
+ML_CUPS = 91105
+ML_CONNECTION = 91106
+ML_LOADING = 91107
+
+ACT_CLOSE = 91100
+ACT_OPEN_HELP = 91101
+ACT_OPEN_DETAIL = 91102
+ACT_OPEN_WHO = 91103
+ACT_VOTE_P1 = 91110
+ACT_VOTE_P2 = 91111
+ACT_VOTE_P3 = 91112
+ACT_VOTE_UNDECIDED = 91113
+ACT_VOTE_N1 = 91114
+ACT_VOTE_N2 = 91115
+ACT_VOTE_N3 = 91116
+ACT_VOTE_LOCKED = 91117
+ACT_IGNORE = 91118
+ACT_REFRESH = 91119
+ACT_PAGE_PREV = 91120
+ACT_PAGE_NEXT = 91121
+
+VOTE_KEYS = {
+    3: "fantastic",
+    2: "beautiful",
+    1: "good",
+    -1: "bad",
+    -2: "poor",
+    -3: "waste",
+}
+
+VOTE_SCORES = {
+    "fantastic": 100,
+    "beautiful": 80,
+    "good": 60,
+    "bad": 40,
+    "poor": 20,
+    "waste": 0,
+}
+
+REMINDER_BUTTONS = [
+    (0.0, ACT_VOTE_P3, "$390", "fantastic", "+++"),
+    (7.3, ACT_VOTE_P2, "$390", "beautiful", "++"),
+    (14.6, ACT_VOTE_P1, "$390", "good", "+"),
+    (21.9, ACT_VOTE_UNDECIDED, "$888", "undecided", "???"),
+    (29.2, ACT_VOTE_N1, "$D02", "bad", "-"),
+    (36.5, ACT_VOTE_N2, "$D02", "poor", "--"),
+    (43.8, ACT_VOTE_N3, "$D02", "waste", "---"),
+]
+
+GM_TAG = {0: "rounds", 1: "time_attack", 2: "team", 3: "laps", 4: "stunts", 5: "cup", 7: "score"}
+
+NUMBER_FORMATS = {
+    "english": {"decimal_sep": ".", "thousands_sep": ","},
+    "german": {"decimal_sep": ",", "thousands_sep": "."},
+    "french": {"decimal_sep": ",", "thousands_sep": " "},
+}
+
+ISO3166_ALPHA3: dict[str, tuple[str, str]] = {
+    "ABW": ("Aruba", "NORTHAMERICA"), "AFG": ("Afghanistan", "ASIA"), "AGO": ("Angola", "AFRICA"),
+    "AIA": ("Anguilla", "NORTHAMERICA"), "ALA": ("Åland Islands", "EUROPE"), "ALB": ("Albania", "EUROPE"),
+    "AND": ("Andorra", "EUROPE"), "ANT": ("Netherlands Antilles", "NORTHAMERICA"), "ARE": ("United Arab Emirates", "ASIA"),
+    "ARG": ("Argentina", "SOUTHAMERICA"), "ARM": ("Armenia", "ASIA"), "ASM": ("American Samoa", "OCEANIA"),
+    "ATA": ("Antarctica", "WORLDWIDE"), "ATF": ("French Southern Territories", "WORLDWIDE"),
+    "ATG": ("Antigua and Barbuda", "NORTHAMERICA"), "AUS": ("Australia", "OCEANIA"), "AUT": ("Austria", "EUROPE"),
+    "AZE": ("Azerbaijan", "ASIA"), "BDI": ("Burundi", "AFRICA"), "BEL": ("Belgium", "EUROPE"),
+    "BEN": ("Benin", "AFRICA"), "BFA": ("Burkina Faso", "AFRICA"), "BGD": ("Bangladesh", "ASIA"),
+    "BGR": ("Bulgaria", "EUROPE"), "BHR": ("Bahrain", "ASIA"), "BHS": ("Bahamas", "NORTHAMERICA"),
+    "BIH": ("Bosnia and Herzegovina", "EUROPE"), "BLR": ("Belarus", "EUROPE"), "BLZ": ("Belize", "NORTHAMERICA"),
+    "BMU": ("Bermuda", "NORTHAMERICA"), "BOL": ("Bolivia", "SOUTHAMERICA"), "BRA": ("Brazil", "SOUTHAMERICA"),
+    "BRB": ("Barbados", "NORTHAMERICA"), "BRN": ("Brunei Darussalam", "ASIA"), "BTN": ("Bhutan", "ASIA"),
+    "BWA": ("Botswana", "AFRICA"), "CAF": ("Central African Republic", "AFRICA"), "CAN": ("Canada", "NORTHAMERICA"),
+    "CHE": ("Switzerland", "EUROPE"), "CHL": ("Chile", "SOUTHAMERICA"), "CHN": ("China", "ASIA"),
+    "CMR": ("Cameroon", "AFRICA"), "COD": ("Democratic Republic of Congo", "AFRICA"), "COG": ("Republic of Congo", "AFRICA"),
+    "COL": ("Colombia", "SOUTHAMERICA"), "CRI": ("Costa Rica", "NORTHAMERICA"), "CUB": ("Cuba", "NORTHAMERICA"),
+    "CYP": ("Cyprus", "ASIA"), "CZE": ("Czech Republic", "EUROPE"), "DEU": ("Germany", "EUROPE"),
+    "DNK": ("Denmark", "EUROPE"), "DOM": ("Dominican Republic", "NORTHAMERICA"), "DZA": ("Algeria", "AFRICA"),
+    "ECU": ("Ecuador", "SOUTHAMERICA"), "EGY": ("Egypt", "AFRICA"), "ESP": ("Spain", "EUROPE"),
+    "EST": ("Estonia", "EUROPE"), "ETH": ("Ethiopia", "AFRICA"), "FIN": ("Finland", "EUROPE"),
+    "FJI": ("Fiji", "OCEANIA"), "FRA": ("France", "EUROPE"), "GBR": ("United Kingdom", "EUROPE"),
+    "GEO": ("Georgia", "ASIA"), "GHA": ("Ghana", "AFRICA"), "GRC": ("Greece", "EUROPE"),
+    "GTM": ("Guatemala", "NORTHAMERICA"), "HKG": ("Hong Kong", "ASIA"), "HRV": ("Croatia", "EUROPE"),
+    "HTI": ("Haiti", "NORTHAMERICA"), "HUN": ("Hungary", "EUROPE"), "IDN": ("Indonesia", "ASIA"),
+    "IND": ("India", "ASIA"), "IRL": ("Ireland", "EUROPE"), "IRN": ("Iran", "ASIA"),
+    "IRQ": ("Iraq", "ASIA"), "ISL": ("Iceland", "EUROPE"), "ISR": ("Israel", "ASIA"),
+    "ITA": ("Italy", "EUROPE"), "JAM": ("Jamaica", "NORTHAMERICA"), "JOR": ("Jordan", "ASIA"),
+    "JPN": ("Japan", "ASIA"), "KAZ": ("Kazakhstan", "ASIA"), "KEN": ("Kenya", "AFRICA"),
+    "KGZ": ("Kyrgyzstan", "ASIA"), "KHM": ("Cambodia", "ASIA"), "KOR": ("South Korea", "ASIA"),
+    "KWT": ("Kuwait", "ASIA"), "LAO": ("Lao People's Democratic Republic", "ASIA"), "LBN": ("Lebanon", "ASIA"),
+    "LBR": ("Liberia", "AFRICA"), "LBY": ("Libyan Arab Jamahiriya", "AFRICA"), "LKA": ("Sri Lanka", "ASIA"),
+    "LSO": ("Lesotho", "AFRICA"), "LTU": ("Lithuania", "EUROPE"), "LUX": ("Luxembourg", "EUROPE"),
+    "LVA": ("Latvia", "EUROPE"), "MAR": ("Morocco", "AFRICA"), "MCO": ("Monaco", "EUROPE"),
+    "MDA": ("Moldova", "EUROPE"), "MDG": ("Madagascar", "AFRICA"), "MEX": ("Mexico", "NORTHAMERICA"),
+    "MKD": ("Macedonia", "EUROPE"), "MLI": ("Mali", "AFRICA"), "MLT": ("Malta", "EUROPE"),
+    "MMR": ("Myanmar", "ASIA"), "MNE": ("Montenegro", "EUROPE"), "MNG": ("Mongolia", "ASIA"),
+    "MOZ": ("Mozambique", "AFRICA"), "MRT": ("Mauritania", "AFRICA"), "MUS": ("Mauritius", "AFRICA"),
+    "MWI": ("Malawi", "AFRICA"), "MYS": ("Malaysia", "ASIA"), "NAM": ("Namibia", "AFRICA"),
+    "NER": ("Niger", "AFRICA"), "NGA": ("Nigeria", "AFRICA"), "NIC": ("Nicaragua", "NORTHAMERICA"),
+    "NLD": ("Netherlands", "EUROPE"), "NOR": ("Norway", "EUROPE"), "NPL": ("Nepal", "ASIA"),
+    "NZL": ("New Zealand", "OCEANIA"), "OMN": ("Oman", "ASIA"), "PAK": ("Pakistan", "ASIA"),
+    "PAN": ("Panama", "NORTHAMERICA"), "PER": ("Peru", "SOUTHAMERICA"), "PHL": ("Philippines", "ASIA"),
+    "PNG": ("Papua New Guinea", "OCEANIA"), "POL": ("Poland", "EUROPE"), "PRT": ("Portugal", "EUROPE"),
+    "PRY": ("Paraguay", "SOUTHAMERICA"), "QAT": ("Qatar", "ASIA"), "ROU": ("Romania", "EUROPE"),
+    "RUS": ("Russian Federation", "EUROPE"), "SAU": ("Saudi Arabia", "ASIA"), "SDN": ("Sudan", "AFRICA"),
+    "SEN": ("Senegal", "AFRICA"), "SGP": ("Singapore", "ASIA"), "SVK": ("Slovakia", "EUROPE"),
+    "SVN": ("Slovenia", "EUROPE"), "SWE": ("Sweden", "EUROPE"), "THA": ("Thailand", "ASIA"),
+    "TUN": ("Tunisia", "AFRICA"), "TUR": ("Turkey", "ASIA"), "TWN": ("Taiwan", "ASIA"),
+    "TZA": ("Tanzania", "AFRICA"), "UGA": ("Uganda", "AFRICA"), "UKR": ("Ukraine", "EUROPE"),
+    "URY": ("Uruguay", "SOUTHAMERICA"), "USA": ("United States of America", "NORTHAMERICA"),
+    "UZB": ("Uzbekistan", "ASIA"), "VEN": ("Venezuela", "SOUTHAMERICA"), "VNM": ("Viet Nam", "ASIA"),
+    "YEM": ("Yemen", "ASIA"), "ZAF": ("South Africa", "AFRICA"), "ZMB": ("Zambia", "AFRICA"), "ZWE": ("Zimbabwe", "AFRICA"),
+}
+
+
+@dataclass
+class WidgetGamemodeCfg:
+    enabled: bool = True
+    pos_x: float = 49.2
+    pos_y: float = 32.86
+
+
+@dataclass
+class ReminderStateCfg:
+    pos_x: float = -40.9
+    pos_y: float = -31.5
+
+
+@dataclass
+class KarmaConfig:
+    enabled: bool = True
+    is_mp: bool = False
+    mx_karma_key: str = field(default='', repr=False)
+    api_auth_url: str = "http://worldwide.mania-karma.com/api/tmforever-trackmania-v4.php"
+    api_url: str = ""
+    website: str = "www.mania-karma.com"
+    fallback_website: str = "karma.wrmania.net"
+    fallback_api_auth_url: str = "http://karma.wrmania.net/api/tmforever-trackmania-v4.php"
+    nation: str = ""
+
+    show_welcome: bool = True
+    show_at_start: bool = True
+    show_karma: bool = True
+    show_votes: bool = True
+    show_details: bool = False
+    allow_public_vote: bool = True
+    show_player_vote_public: bool = True
+    messages_in_window: bool = True
+    score_mx_window: bool = True
+    remind_to_vote: str = "SCORE"
+    require_finish: int = 1
+    reminder_window_display: str = "SCORE"
+    uptime_check: bool = False
+    uptodate_info: str = "MASTERADMIN"
+    import_done: bool = True
+    save_karma_also_local: bool = True
+    sync_global_karma_local: bool = True
+    karma_calculation_method: str = "DEFAULT"
+    number_format: str = "english"
+    connect_timeout: int = 30
+    wait_timeout: int = 40
+    keepalive_min_timeout: int = 300
+
+    bg_pos_default: str = "DFDF"
+    bg_pos_focus: str = "FFFF"
+    text_pos_color: str = "070F"
+    bg_neg_default: str = "FDDF"
+    bg_neg_focus: str = "FFFF"
+    text_neg_color: str = "700F"
+    bg_vote: str = "F70F"
+    bg_disabled: str = "9CFF"
+
+    race_title: str = "$FFFManiaKarma"
+    race_icon_style: str = "Icons64x64_1"
+    race_icon_substyle: str = "ToolLeague1"
+    race_bg_style: str = "Bgs1InRace"
+    race_bg_substyle: str = "NavButton"
+    race_title_style: str = "BgsPlayerCard"
+    race_title_substyle: str = "BgRacePlayerName"
+
+    score_title: str = "$FFFManiaKarma"
+    score_icon_style: str = "Icons64x64_1"
+    score_icon_substyle: str = "ToolLeague1"
+    score_bg_style: str = "BgsPlayerCard"
+    score_bg_substyle: str = "BgRacePlayerName"
+    score_title_style: str = "BgsPlayerCard"
+    score_title_substyle: str = "ProgressBar"
+
+    img_cup_gold: str = "http://maniacdn.net/undef.de/xaseco1/mania-karma/cup_gold.png"
+    img_cup_silver: str = "http://maniacdn.net/undef.de/xaseco1/mania-karma/cup_silver.png"
+    img_open_left: str = "http://maniacdn.net/undef.de/xaseco1/mania-karma/edge-open-ld-dark.png"
+    img_open_right: str = "http://maniacdn.net/undef.de/xaseco1/mania-karma/edge-open-rd-dark.png"
+    img_tmx_logo_normal: str = ""
+    img_tmx_logo_focus: str = ""
+    img_maniakarma_logo: str = ""
+    img_progress_indicator: str = ""
+
+    msg_welcome: str = ""
+    msg_uptodate_ok: str = ""
+    msg_uptodate_new: str = ""
+    msg_uptodate_failed: str = ""
+    msg_karma_message: str = "{#server}> {#karma}Karma of {#highlite}{1}{#karma} is {#highlite}{2}"
+    msg_karma_your_vote: str = " {#karma}(your vote: {#highlite}{1}{#karma} with {#highlite}{2}{#karma})"
+    msg_karma_not_voted: str = " {#karma}(you did not vote yet)"
+    msg_karma_details: str = (
+        "{#server}>{#karma} Total: {1}, +++ {2}% ({3}), ++ {4}% ({5}), + {6}% ({7}), - {8}% ({9}), -- {10}% ({11}), --- {12}% ({13})"
+    )
+    msg_karma_done: str = "{#server}> {#karma}Vote successful for Track {#highlite}{1}{#karma}!"
+    msg_karma_change: str = "{#server}> {#karma}Vote changed for Track {#highlite}{1}{#karma}!"
+    msg_karma_voted: str = "{#server}> {#karma}You have already voted for this Track"
+    msg_karma_remind: str = "{#server}> {#karma}Please vote for this track with /+++ /++ /+ /- /-- /--- or use the Karma widget."
+    msg_require_finish: str = "{#server}> {#error}You need to finish this Track at least {#highlite}$I {1}{#error} time{2} before being able to vote!"
+    msg_no_public: str = "{#server}> {#error}Public karma vote is disabled. Use {#highlite}{1}{#error} privately."
+    msg_karma_list_help: str = ""
+    msg_karma_help: str = "Use /karma, /karma details, /karma help, /+++ /++ /+ /- /-- /---"
+    msg_reminder_at_score: str = "Your vote"
+    msg_vote_singular: str = "vote"
+    msg_vote_plural: str = "votes"
+    msg_you_have_voted: str = "{#server}> {#karma}You already voted {#highlite}{1}{#karma} with {#highlite}{2}{#karma}."
+    msg_fantastic: str = "fantastic"
+    msg_beautiful: str = "beautiful"
+    msg_good: str = "good"
+    msg_undecided: str = "undecided"
+    msg_bad: str = "bad"
+    msg_poor: str = "poor"
+    msg_waste: str = "waste"
+    msg_show_opinion: str = "{#server}> {#highlite}{1}{#server} thinks this Track is {#highlite}{2}{#server}! What do you think?"
+    msg_show_undecided: str = "{#server}> {#highlite}{1}{#server} is undecided about this Track. What do you think?"
+
+    gamemodes: dict[int, WidgetGamemodeCfg] = field(default_factory=dict)
+    reminder_race: ReminderStateCfg = field(default_factory=lambda: ReminderStateCfg(-40.9, -31.5))
+    reminder_score: ReminderStateCfg = field(default_factory=lambda: ReminderStateCfg(-40.9, 32.5))
+
+    current_state: int = 1
+
+    def gm_cfg(self, mode: int) -> WidgetGamemodeCfg:
+        return self.gamemodes.get(mode, WidgetGamemodeCfg())
+
+
+MANIA_KARMA_SETTINGS_SCHEMA = AppSettingsSchema(
+    app_id="mania_karma",
+    section_name="ui",
+    description="ManiaKarma settings",
+    settings=(
+        AppSetting("config", {}, _as_dict, aliases=("karma",)),
+        AppSetting("config/enabled", True, as_bool, aliases=("karma/enabled",)),
+        AppSetting("config/number_format", "english", as_str, aliases=("karma/number_format",)),
+        AppSetting("config/show_welcome", True, as_bool, aliases=("karma/show_welcome",)),
+        AppSetting("config/allow_public_vote", True, as_bool, aliases=("karma/allow_public_vote",)),
+        AppSetting("config/show_at_start", True, as_bool, aliases=("karma/show_at_start",)),
+        AppSetting("config/show_details", True, as_bool, aliases=("karma/show_details",)),
+        AppSetting("config/show_votes", True, as_bool, aliases=("karma/show_votes",)),
+        AppSetting("config/show_karma", True, as_bool, aliases=("karma/show_karma",)),
+        AppSetting("config/require_finish", 1, as_int, aliases=("karma/require_finish",)),
+        AppSetting("config/remind_to_vote", "score", as_str, aliases=("karma/remind_to_vote",)),
+        AppSetting("config/score_mx_window", True, as_bool, aliases=("karma/score_mx_window",)),
+        AppSetting("config/messages_in_window", True, as_bool, aliases=("karma/messages_in_window",)),
+        AppSetting("config/show_player_vote_public", True, as_bool, aliases=("karma/show_player_vote_public",)),
+        AppSetting("config/save_karma_also_local", True, as_bool, aliases=("karma/save_karma_also_local",)),
+        AppSetting("config/sync_global_karma_local", True, as_bool, aliases=("karma/sync_global_karma_local",)),
+        AppSetting("config/karma_calculation_method", "default", as_str, aliases=("karma/karma_calculation_method",)),
+        AppSetting("config/uptodate_check", True, as_bool, aliases=("karma/uptodate_check",)),
+        AppSetting("config/uptodate_info", "default", as_str, aliases=("karma/uptodate_info",)),
+        AppSetting("config/wait_timeout", 40, as_int, aliases=("karma/wait_timeout",)),
+        AppSetting("config/connect_timeout", 30, as_int, aliases=("karma/connect_timeout",)),
+        AppSetting("config/keepalive_min_timeout", 300, as_int, aliases=("karma/keepalive_min_timeout",)),
+        AppSetting("config/urls", {}, _as_dict, aliases=("karma/urls",)),
+        AppSetting("config/images", {}, _as_dict, aliases=("karma/images",)),
+        AppSetting("config/messages", {}, _as_dict, aliases=("karma/messages",)),
+    ),
+)
+
+_cfg = KarmaConfig()
+_api_authcode = ""
+_api_connected = False
+_retrytime = 0
+_lookup_retrytime = 0
+_api_provider = 0
+_api_endpoint = ''
+_api_website = ''
+_api_epoch = 0
+_auth_pending = False
+_window_state: dict[str, tuple[str, int]] = {}
+_runtime_aseco: Aseco | None = None
+_current_map: dict[str, Any] = {}
+
+
+class _KarmaAuthenticationPending(PreparationDeferred):
+    """No write was attempted; keep the retained vote pending for authentication."""
+
+
+_karma: dict[str, Any] = {}
+
+
+def _apply_enabled_flag(aseco: Aseco) -> bool:
+    global _cfg
+
+    bound = bind_app_settings(MANIA_KARMA_SETTINGS_SCHEMA, getattr(aseco, '_base_dir', None))
+    _cfg.enabled = bool(bound.values["config/enabled"])
+    setattr(aseco, 'feature_karma', _cfg.enabled)
+    setattr(aseco.server, 'feature_karma', _cfg.enabled)
+    return _cfg.enabled
+
+
+def _set_empty_karma(reset_locals: bool = False) -> dict[str, Any]:
+    data = {
+        "global_loaded": False,
+        "data": {"uid": "", "id": False, "name": "", "author": "", "env": "", "tmx": ""},
+        "new": {"players": {}},
+        "global": {
+            "votes": {
+                "karma": 0, "total": 0,
+                "fantastic": {"count": 0, "percent": 0.0},
+                "beautiful": {"count": 0, "percent": 0.0},
+                "good": {"count": 0, "percent": 0.0},
+                "bad": {"count": 0, "percent": 0.0},
+                "poor": {"count": 0, "percent": 0.0},
+                "waste": {"count": 0, "percent": 0.0},
+            },
+            "players": {},
+        },
+        "local": {
+            "votes": {
+                "karma": 0, "total": 0,
+                "fantastic": {"count": 0, "percent": 0.0},
+                "beautiful": {"count": 0, "percent": 0.0},
+                "good": {"count": 0, "percent": 0.0},
+                "bad": {"count": 0, "percent": 0.0},
+                "poor": {"count": 0, "percent": 0.0},
+                "waste": {"count": 0, "percent": 0.0},
+            },
+            "players": {},
+        },
+    }
+    if not reset_locals and _karma:
+        data["global"]["players"] = dict(_karma.get("global", {}).get("players", {}))
+        data["local"]["players"] = dict(_karma.get("local", {}).get("players", {}))
+    return data
+
+
+# ---------------------------------------------------------------------------
+# generic helpers
+# ---------------------------------------------------------------------------
+
+def _path_value(node: Any, path: str, default=None):
+    if node is None:
+        return default
+    if isinstance(node, dict):
+        cur: Any = node
+        for part in [p for p in str(path or '').split('/') if p]:
+            if not isinstance(cur, dict):
+                return default
+            cur = cur.get(part)
+            if cur is None:
+                return default
+        return cur
+    try:
+        el = node.find(path)
+    except Exception:
+        return default
+    return el.text if el is not None and el.text is not None else default
+
+
+def _x(node: Any, path: str, default: str = "") -> str:
+    raw = _path_value(node, path, None)
+    if raw is None:
+        return default
+    if isinstance(raw, str):
+        return raw.strip()
+    if isinstance(raw, (int, float, bool)):
+        return str(raw)
+    return default
+
+
+def _xb(node: Any, path: str, default: bool = False) -> bool:
+    return as_bool(_path_value(node, path, default), default)
+
+
+def _xi(node: Any, path: str, default: int = 0) -> int:
+    return as_int(_path_value(node, path, default), default)
+
+
+def _xf(node: Any, path: str, default: float = 0.0) -> float:
+    try:
+        raw = _path_value(node, path, default)
+        if raw is None or raw == '':
+            return default
+        return float(raw)
+    except Exception:
+        return default
+
+
+def _fmt_message(aseco: Aseco, template: str, *args: Any) -> str:
+    msg = template or ""
+    if getattr(aseco, 'is_maniaplanet', False):
+        from pyxaseco.maniaplanet_ui import provider_label
+        msg = provider_label(msg)
+    for idx, val in enumerate(args, 1):
+        msg = msg.replace(f"{{{idx}}}", str(val))
+    msg = msg.replace("{br}", "\n")
+    return aseco.format_colors(msg)
+
+
+def _fmt_template(template: str, *args: Any) -> str:
+    msg = template or ""
+    for idx, val in enumerate(args, 1):
+        msg = msg.replace(f"{{{idx}}}", str(val))
+    return msg
+
+
+
+
+def _sanitize_ml_text(text: Any) -> str:
+    from xml.sax.saxutils import escape as _esc
+    try:
+        return _esc(str(text or ''), {'"': '&quot;'})
+    except Exception:
+        return ''
+def _number(n: int | float, decimals: int = 0) -> str:
+    fmt = NUMBER_FORMATS.get(_cfg.number_format.lower(), NUMBER_FORMATS["english"])
+    try:
+        value = float(n)
+    except Exception:
+        value = 0.0
+
+    if decimals > 0:
+        s = f"{value:,.{decimals}f}"
+        return s.replace(",", "X").replace(".", fmt["decimal_sep"]).replace("X", fmt["thousands_sep"])
+
+    if value.is_integer():
+        s = f"{int(value):,}"
+        return s.replace(",", fmt["thousands_sep"])
+
+    s = f"{value:,.2f}"
+    return s.replace(",", "X").replace(".", fmt["decimal_sep"]).replace("X", fmt["thousands_sep"])
+
+
+def _players_all(aseco: Aseco) -> list[Any]:
+    try:
+        return list(aseco.server.players.all())
+    except Exception:
+        try:
+            return list(aseco.server.players.player_list)
+        except Exception:
+            return []
+
+
+def _get_player(aseco: Aseco, login: str):
+    try:
+        return aseco.server.players.get_player(login)
+    except Exception:
+        try:
+            return aseco.server.players.getPlayer(login)
+        except Exception:
+            for p in _players_all(aseco):
+                if getattr(p, "login", None) == login:
+                    return p
+    return None
+
+
+def _is_spectator(aseco: Aseco, player: Any) -> bool:
+    try:
+        return bool(aseco.is_spectator(player))
+    except Exception:
+        try:
+            return bool(aseco.isSpectator(player))
+        except Exception:
+            return bool(getattr(player, "isspectator", False) or getattr(player, "spectator", False))
+
+
+def _is_master_admin(aseco: Aseco, player: Any) -> bool:
+    try:
+        return bool(aseco.is_master_admin(player))
+    except Exception:
+        try:
+            return bool(aseco.isMasterAdmin(player))
+        except Exception:
+            return False
+
+
+def _startup_phase(aseco: Aseco) -> bool:
+    return bool(getattr(aseco, "startup_phase", False))
+
+
+def _get_mode(aseco: Aseco) -> int:
+    try:
+        return int(aseco.server.gameinfo.mode)
+    except Exception:
+        return 1
+
+
+def _display_mode(aseco: Aseco) -> int:
+    from pyxaseco.core.widget_delivery import is_score_phase
+    return 7 if is_score_phase(aseco) else _get_mode(aseco)
+
+
+def _current_uid() -> str:
+    return str(_current_map.get("uid") or "").strip()
+
+
+def _vote_label(vote: int) -> str:
+    return {
+        3: _cfg.msg_fantastic,
+        2: _cfg.msg_beautiful,
+        1: _cfg.msg_good,
+        0: _cfg.msg_undecided,
+        -1: _cfg.msg_bad,
+        -2: _cfg.msg_poor,
+        -3: _cfg.msg_waste,
+    }.get(vote, _cfg.msg_undecided)
+
+
+def _track_page_url(aseco: Aseco) -> str:
+    uid = urllib.parse.quote(str(_current_map.get("uid", "") or ""))
+    env = urllib.parse.quote(str(_current_map.get("environment", "") or ""))
+    game = urllib.parse.quote(str(getattr(aseco.server, "game", "TMF") or "TMF"))
+    return f"http://{_active_website()}/goto?uid={uid}&env={env}&game={game}"
+
+
+def _normalise_web_url(url: str) -> str:
+    return _normalise_tmx_web_url(url)
+
+
+def _tmx_page_url(aseco: Aseco) -> str:
+    ch = getattr(aseco.server, "challenge", None)
+    tmx_id = str(getattr(ch, "tmx_id", "") or _karma.get("data", {}).get("tmx", "") or "").strip()
+    if getattr(aseco, 'is_maniaplanet', False):
+        from apps.tmx.maniaplanet import map_page
+        return map_page(tmx_id) if tmx_id.isdigit() else ''
+    if tmx_id.isdigit():
+        return _build_public_tmx_track_url(
+            aseco,
+            challenge=ch,
+            track_id=tmx_id,
+            prefix=str(getattr(ch, "tmx_prefix", "") or "").strip(),
+            html_amp=True,
+        )
+    return _build_public_tmx_track_url(aseco, challenge=ch, html_amp=True)
+
+
+def _ensure_player_state(player: Any) -> None:
+    if not hasattr(player, "data") or player.data is None:
+        player.data = {}
+    player.data.setdefault("ManiaKarma", {})
+    mk = player.data["ManiaKarma"]
+    mk.setdefault("ReminderWindow", False)
+    mk.setdefault("FinishedMapCount", 0)
+    mk.setdefault("LotteryPayout", 0)
+
+
+def _effective_vote(login: str) -> int:
+    pending = int(_karma.get("new", {}).get("players", {}).get(login, 0) or 0)
+    if pending != 0:
+        return pending
+    gvote = int(_karma["global"]["players"].get(login, {}).get("vote", 0) or 0)
+    if gvote != 0:
+        return gvote
+    return int(_karma["local"]["players"].get(login, {}).get("vote", 0) or 0)
+
+
+# ---------------------------------------------------------------------------
+# DB helpers
+# ---------------------------------------------------------------------------
+
+async def _get_pool():
+    try:
+        if _runtime_aseco is None:
+            return None
+        return await localdb_get_pool(_runtime_aseco)
+    except Exception:
+        return None
+
+
+async def _get_player_id(login: str) -> int:
+    try:
+        if _runtime_aseco is None:
+            return 0
+        return int(await localdb_get_player_id(_runtime_aseco, login))
+    except Exception:
+        return 0
+
+
+async def _db_fetchone(query: str, params: tuple = ()):
+    pool = await _get_pool()
+    if not pool:
+        return None
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(query, params)
+            return await cur.fetchone()
+
+
+async def _db_fetchall(query: str, params: tuple = ()):
+    pool = await _get_pool()
+    if not pool:
+        return []
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(query, params)
+            return await cur.fetchall()
+
+
+async def _db_execute(query: str, params: tuple = ()) -> None:
+    pool = await _get_pool()
+    if not pool:
+        return
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(query, params)
+
+
+async def _get_current_map_info(aseco: Aseco) -> dict[str, Any]:
+    ch = getattr(aseco.server, "challenge", None)
+    if ch is None:
+        return {
+            "id": False,
+            "uid": "",
+            "name": "",
+            "author": "",
+            "environment": "",
+            "authortime": 0,
+            "authorscore": 0,
+            "nblaps": 0,
+            "nbchecks": 0,
+            "mood": "",
+            "mx": {},
+        }
+
+    map_id = getattr(ch, "id", False)
+    uid = str(getattr(ch, "uid", "") or "")
+    if not map_id and uid:
+        row = await _db_fetchone("SELECT Id FROM challenges WHERE Uid=%s LIMIT 1", (uid,))
+        if row:
+            map_id = int(row[0])
+
+    mx = {}
+    for attr in ("mx", "tmx"):
+        obj = getattr(ch, attr, None)
+        if obj is not None:
+            mx = {k: getattr(obj, k) for k in dir(obj) if not k.startswith("_") and not callable(getattr(obj, k, None))}
+            break
+
+    script = ''
+    if _cfg.mx_karma_key:
+        try:
+            reply = await aseco.client.query('GetScriptName')
+            script = str(reply.get('CurrentValue') or '') if isinstance(reply, dict) else ''
+        except Exception:
+            logger.warning('[MXKarma] Dedicated script name unavailable; keeping votes local')
+    return {
+        "id": map_id if map_id not in (None, 0, "") else False,
+        "uid": uid,
+        "name": getattr(ch, "name", "") or "",
+        "author": getattr(ch, "author", "") or "",
+        "environment": getattr(ch, "environment", "") or getattr(ch, "environnement", "") or "",
+        "authortime": int(getattr(ch, "authortime", 0) or 0),
+        "authorscore": int(getattr(ch, "authorscore", 0) or 0),
+        "nblaps": int(getattr(ch, "nblaps", 0) or 0),
+        "nbchecks": int(getattr(ch, "nbchecks", 0) or 0),
+        "mood": getattr(ch, "mood", "") or "",
+        "mx": mx,
+        "script": script,
+        "observed_since": time.time(),
+    }
+
+
+async def _seed_finish_counts(aseco: Aseco, players: list[Any] | None = None) -> None:
+    if _cfg.require_finish <= 0 or not _current_map.get("id"):
+        return
+    if players is None:
+        players = _players_all(aseco)
+    ids = [int(getattr(p, "id", 0) or 0) for p in players if int(getattr(p, "id", 0) or 0) > 0]
+    if not ids:
+        return
+    in_clause = ",".join(["%s"] * len(ids))
+    query = (
+        "SELECT p.Login, COUNT(t.Id) AS cnt "
+        "FROM rs_times t "
+        "LEFT JOIN players p ON p.Id=t.playerID "
+        f"WHERE t.playerID IN ({in_clause}) AND t.ChallengeId=%s "
+        "GROUP BY p.Login"
+    )
+    rows = await _db_fetchall(query, tuple(ids) + (int(_current_map["id"]),))
+    counts = {str(r[0]): int(r[1] or 0) for r in rows}
+    for p in players:
+        _ensure_player_state(p)
+        p.data["ManiaKarma"]["FinishedMapCount"] = counts.get(p.login, p.data["ManiaKarma"].get("FinishedMapCount", 0))
+
+
+async def _get_local_votes(map_id: int | bool, login: str | None = None) -> dict[str, dict[str, int]]:
+    result: dict[str, dict[str, int]] = {}
+    if not map_id:
+        return result
+
+    # schema 1: rs_karma(Score, PlayerId, ChallengeId)
+    try:
+        if login:
+            rows = await _db_fetchall(
+                "SELECT p.Login, k.Score FROM rs_karma k LEFT JOIN players p ON p.Id=k.PlayerId WHERE k.ChallengeId=%s AND p.Login=%s",
+                (int(map_id), login),
+            )
+        else:
+            rows = await _db_fetchall(
+                "SELECT p.Login, k.Score FROM rs_karma k LEFT JOIN players p ON p.Id=k.PlayerId WHERE k.ChallengeId=%s",
+                (int(map_id),),
+            )
+        for row in rows:
+            result[str(row[0])] = {"vote": int(row[1] or 0), "previous": 0}
+        return result
+    except Exception:
+        pass
+
+    # schema 2 fallback: rs_karma(vote, PlayerId, uid)
+    uid = _current_uid()
+    if not uid:
+        return result
+    try:
+        if login:
+            rows = await _db_fetchall(
+                "SELECT p.Login, k.vote FROM rs_karma k LEFT JOIN players p ON p.Id=k.PlayerId WHERE k.uid=%s AND p.Login=%s",
+                (uid, login),
+            )
+        else:
+            rows = await _db_fetchall(
+                "SELECT p.Login, k.vote FROM rs_karma k LEFT JOIN players p ON p.Id=k.PlayerId WHERE k.uid=%s",
+                (uid,),
+            )
+        for row in rows:
+            result[str(row[0])] = {"vote": int(row[1] or 0), "previous": 0}
+    except Exception:
+        pass
+    return result
+
+
+async def _save_local_votes(votes: dict[str, int]) -> None:
+    if not votes:
+        return
+    map_id = _current_map.get("id")
+    uid = _current_uid()
+    for login, vote in votes.items():
+        player_id = await _get_player_id(login)
+        if player_id <= 0:
+            continue
+        ok = False
+        if map_id:
+            try:
+                await _db_execute(
+                    "INSERT INTO rs_karma (Score, PlayerId, ChallengeId) VALUES (%s, %s, %s) "
+                    "ON DUPLICATE KEY UPDATE Score=VALUES(Score)",
+                    (int(vote), int(player_id), int(map_id)),
+                )
+                ok = True
+            except Exception:
+                pass
+            if not ok:
+                try:
+                    row = await _db_fetchone(
+                        "SELECT Id FROM rs_karma WHERE PlayerId=%s AND ChallengeId=%s LIMIT 1",
+                        (int(player_id), int(map_id)),
+                    )
+                    if row:
+                        await _db_execute("UPDATE rs_karma SET Score=%s WHERE Id=%s", (int(vote), int(row[0])))
+                    else:
+                        await _db_execute(
+                            "INSERT INTO rs_karma (Score, PlayerId, ChallengeId) VALUES (%s, %s, %s)",
+                            (int(vote), int(player_id), int(map_id)),
+                        )
+                    ok = True
+                except Exception:
+                    pass
+        if not ok and uid:
+            try:
+                await _db_execute(
+                    "INSERT INTO rs_karma (PlayerId, uid, vote) VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE vote=VALUES(vote)",
+                    (int(player_id), uid, int(vote)),
+                )
+            except Exception as exc:
+                logger.debug("[ManiaKarma] failed to store local vote for %s: %s", login, exc)
+
+
+# ---------------------------------------------------------------------------
+# API helpers
+# ---------------------------------------------------------------------------
+
+async def _api_get(url: str, timeout: int) -> str:
+    from pyxaseco.core.http_sessions import HttpPolicy, request_timeout
+    from pyxaseco.core.external_io import read_limited
+    session = _runtime_aseco.jobs.http.get('karma', HttpPolicy())
+    async with observed_response(_runtime_aseco, 'karma',
+            session.get(url, timeout=request_timeout(timeout, connect_seconds=_cfg.connect_timeout))) as response:
+        response.raise_for_status()
+        body = await read_limited(response, 1024 * 1024)
+        return body.decode('utf-8', errors='replace')
+
+
+async def _api_post(url: str, payload: str, timeout: int):
+    from pyxaseco.core.http_sessions import HttpPolicy, request_timeout
+    from pyxaseco.core.external_io import read_limited
+    session = _runtime_aseco.jobs.http.get('karma', HttpPolicy())
+    async with observed_response(_runtime_aseco, 'karma', session.post(url, data=payload.encode('utf-8'),
+                            headers={'Content-Type': 'text/plain; charset=utf-8'},
+                            timeout=request_timeout(timeout, connect_seconds=_cfg.connect_timeout))) as response:
+        body = await read_limited(response, 1024 * 1024)
+        return response.status, body.decode('utf-8', errors='replace')
+
+
+async def _queue_karma(aseco, url, apply, *, key, current_map=True, timeout=None, operation=None):
+    from pyxaseco.core.background_jobs import JobEnvelope, JobPolicy
+    # URLs containing session auth tokens stay in this ephemeral closure,
+    # never in retained storage or diagnostics.
+    job = JobEnvelope.capture(aseco.capture_job_context(), {})
+    timeout = _cfg.wait_timeout if timeout is None else timeout
+    async def read(_envelope):
+        return await _api_get(url, timeout)
+    async def completed(result):
+        await apply(result.value if result.status == 'completed' else None)
+    return aseco.jobs.service('karma', JobPolicy(deadline_seconds=120)).submit(
+        job, operation or read, completed, current_map=current_map, dedupe_key=key)
+
+
+def _providers():
+    providers = []
+    for endpoint, website in ((_cfg.api_auth_url, _cfg.website),
+                               (_cfg.fallback_api_auth_url, _cfg.fallback_website)):
+        if endpoint and not any(endpoint == item[0] for item in providers):
+            providers.append((endpoint, website))
+    return providers
+
+
+def _active_website():
+    return _api_website or _cfg.website
+
+
+def _disconnect_api(*, advance=False, delay=60):
+    global _api_connected, _api_authcode, _api_epoch, _auth_pending
+    global _api_provider, _retrytime, _lookup_retrytime
+    _api_connected, _api_authcode, _cfg.api_url = False, '', ''
+    _api_epoch += 1
+    _auth_pending = False
+    _lookup_retrytime = 0
+    _api_provider = ((_api_provider + 1) % max(1, len(_providers()))) if advance else 0
+    _retrytime = int(asyncio.get_running_loop().time()) + delay
+
+
+async def _api_auth(aseco: Aseco) -> bool:
+    global _retrytime, _api_epoch, _auth_pending, _api_connected, _api_authcode
+    if getattr(aseco, 'is_maniaplanet', False):
+        return await _mx_api_auth(aseco)
+    if _auth_pending or not _cfg.enabled:
+        return _api_connected
+    providers = _providers()
+    if not providers:
+        return False
+    login = getattr(aseco.server, 'serverlogin', '') or ''
+    query = urllib.parse.urlencode({
+        'Action': 'Auth', 'login': login,
+        'name': base64.b64encode(str(getattr(aseco.server, 'name', '') or '').encode()).decode(),
+        'game': 'TmForever', 'zone': str(getattr(aseco.server, 'zone', '') or ''),
+        'nation': _cfg.nation})
+    start = _api_provider % len(providers)
+    _api_epoch += 1
+    epoch = _api_epoch
+    _auth_pending = True
+    _api_connected, _api_authcode, _cfg.api_url = False, '', ''
+    _retrytime = int(asyncio.get_running_loop().time()) + 60
+
+    async def authenticate(_envelope):
+        for offset in range(len(providers)):
+            index = (start + offset) % len(providers)
+            endpoint, _website = providers[index]
+            try:
+                body = await _api_get(endpoint + '?' + query, _cfg.connect_timeout)
+                xml = ET.fromstring(body or '')
+                if int(xml.findtext('status') or 0) == 200 and xml.findtext('authcode'):
+                    return index, body
+            except Exception:
+                # Transport errors, HTML error pages and rejected auth all try
+                # the other provider without forwarding this provider's token.
+                continue
+        return None
+
+    async def apply(result):
+        global _api_authcode, _api_connected, _retrytime, _auth_pending
+        global _api_provider, _api_endpoint, _api_website, _lookup_retrytime
+        if not _cfg.enabled or epoch != _api_epoch:
+            return
+        _auth_pending = False
+        try:
+            index, body = result if result is not None else (start, '')
+            xml = ET.fromstring(body)
+            if int(xml.findtext('status') or 0) != 200:
+                raise ValueError('Karma auth rejected')
+            _api_authcode = xml.findtext('authcode') or ''
+            if not _api_authcode:
+                raise ValueError('Missing Karma auth code')
+            endpoint, website = providers[index]
+            switched = bool(_api_endpoint and _api_endpoint != endpoint)
+            _api_provider, _api_endpoint, _api_website = index, endpoint, website
+            _cfg.api_url = xml.findtext('api_url') or endpoint
+            if switched:
+                _karma['global'] = _set_empty_karma(True)['global']
+                _karma['global_loaded'] = False
+                _karma['lookup_revision'] = _karma.get('lookup_revision', 0) + 1
+                _cfg.import_done = True
+            imported = str(xml.findtext('import_done') or '').lower()
+            if imported in ('true', 'false'):
+                _cfg.import_done = imported == 'true'
+            _api_connected, _retrytime = True, 0
+            _lookup_retrytime = 0
+            if index != start or switched or index != 0:
+                logger.info('[ManiaKarma] Using provider %s', website)
+            if switched:
+                await _send_widget_combination(aseco, ['cups_values'], None)
+            await _fetch_global_votes(aseco)
+            await _send_connection_status(aseco, True, _cfg.current_state)
+        except (ValueError, ET.ParseError):
+            _api_connected = False
+            _retrytime = int(asyncio.get_running_loop().time()) + 60
+            logger.warning('[ManiaKarma] Configured providers unavailable/rejected; retry deferred')
+    from pyxaseco.core.background_jobs import Admission
+    outcome = await _queue_karma(aseco, '', apply, key=f'auth:{epoch}', current_map=False,
+                                 timeout=_cfg.connect_timeout, operation=authenticate)
+    if outcome != Admission.ACCEPTED and epoch == _api_epoch:
+        _auth_pending = False
+    return _api_connected
+
+
+def _parse_global_votes(body):
+    if not body:
+        return {}
+    try:
+        xml = ET.fromstring(body)
+        if int(xml.findtext("status") or 0) != 200:
+            return {}
+        votes_node = xml.find("votes")
+        out = {
+            "karma": 0,
+            "total": 0,
+            "fantastic": {"count": 0, "percent": 0.0},
+            "beautiful": {"count": 0, "percent": 0.0},
+            "good": {"count": 0, "percent": 0.0},
+            "bad": {"count": 0, "percent": 0.0},
+            "poor": {"count": 0, "percent": 0.0},
+            "waste": {"count": 0, "percent": 0.0},
+            "players": {},
+        }
+        if votes_node is not None:
+            out["karma"] = int(votes_node.findtext("karma") or 0)
+            total = 0
+            for key in ("fantastic", "beautiful", "good", "bad", "poor", "waste"):
+                node = votes_node.find(key)
+                if node is not None:
+                    cnt = int(node.get("count", "0") or 0)
+                    pct = float(node.get("percent", "0") or 0.0)
+                    out[key] = {"count": cnt, "percent": pct}
+                    total += cnt
+            out["total"] = total
+        players_node = xml.find("players")
+        if players_node is not None:
+            for pl in players_node.findall("player"):
+                login = pl.get("login", "")
+                if login:
+                    out["players"][login] = {
+                        "vote": int(pl.get("vote", "0") or 0),
+                        "previous": int(pl.get("previous", "0") or 0),
+                    }
+        return out
+    except Exception as exc:
+        logger.debug("[ManiaKarma] get parse failed: %s", exc)
+        return {}
+
+
+async def _mx_api_auth(aseco: Aseco) -> bool:
+    global _api_epoch, _api_connected, _api_authcode, _retrytime, _auth_pending
+    key = _cfg.mx_karma_key
+    if not key or not _cfg.enabled or not aseco.server.serverlogin:
+        return False
+    if _auth_pending or _api_connected:
+        return _api_connected
+    from pyxaseco.core.background_jobs import Admission
+
+    _mx_karma_delivery(aseco)
+    _api_epoch += 1
+    epoch = _api_epoch
+    _auth_pending = True
+    _retrytime = int(asyncio.get_running_loop().time()) + 60
+
+    async def authenticate(_):
+        return await karma_mx.authenticate(aseco, key, timeout=_cfg.connect_timeout)
+
+    async def apply(token):
+        global _api_connected, _api_authcode, _retrytime, _auth_pending
+        if not _cfg.enabled or epoch != _api_epoch:
+            return
+        _auth_pending = False
+        _api_authcode = token or ''
+        _api_connected = bool(token)
+        if not token:
+            logger.warning('[MXKarma] Authentication unavailable/rejected; keeping votes local and retrying')
+            return
+        _retrytime = 0
+        logger.info('[MXKarma] Connected')
+        await _fetch_global_votes(aseco)
+        await _send_connection_status(aseco, True, _cfg.current_state)
+
+    outcome = await _queue_karma(aseco, '', apply, key=f'mx-auth:{epoch}',
+                                 current_map=False, operation=authenticate)
+    if outcome != Admission.ACCEPTED and epoch == _api_epoch:
+        _auth_pending = False
+    return _api_connected
+
+
+async def _fetch_mx_rating(aseco: Aseco) -> None:
+    if not _cfg.mx_karma_key or not _current_map.get('script'):
+        return
+    if not _api_connected:
+        if not _retrytime:
+            await _mx_api_auth(aseco)
+        return
+    epoch, token = _api_epoch, _api_authcode
+    uid = _current_uid()
+    course = dict(_current_map)
+
+    async def read(_):
+        try:
+            return await karma_mx.map_rating(aseco, token, course, timeout=_cfg.wait_timeout)
+        except karma_mx.MXKarmaSessionExpired:
+            return False
+
+    async def apply(result):
+        global _lookup_retrytime
+        if not _cfg.enabled or epoch != _api_epoch or uid != _current_uid():
+            return
+        if result is False:
+            _disconnect_api()
+            await _send_widget_combination(aseco, ['cups_values'], None)
+            return
+        if result is None:
+            _lookup_retrytime = int(asyncio.get_running_loop().time()) + 60
+            await _send_widget_combination(aseco, ['cups_values'], None)
+            return
+        _lookup_retrytime = 0
+        first_loaded = not _karma.get('global_loaded')
+        _karma['global_loaded'] = True
+        _karma['global']['votes'].update(result)
+        await _send_widget_combination(aseco, ['cups_values'], None)
+        if first_loaded and _cfg.show_at_start:
+            await _send_map_karma_message(aseco, None)
+
+    await _queue_karma(aseco, '', apply, key=f'mx-rating:{epoch}:{uid}', operation=read)
+
+
+def _mx_karma_delivery(aseco):
+    from pyxaseco.core.retained_delivery import delivery
+
+    def ready():
+        return bool(_cfg.enabled and _cfg.mx_karma_key and _api_connected and _api_authcode)
+
+    async def prepare(data):
+        if not ready():
+            raise _KarmaAuthenticationPending('MXKarma authentication not ready')
+        return data
+
+    async def send(data):
+        epoch = _api_epoch
+        try:
+            await karma_mx.save_votes(aseco, _api_authcode, data['map'], data['votes'],
+                                      timeout=_cfg.wait_timeout)
+        except karma_mx.MXKarmaSessionExpired:
+            if epoch == _api_epoch:
+                _disconnect_api()
+            raise
+        return True
+
+    async def apply(data, _result, _current):
+        logger.info('[MXKarma] Confirmed %d vote(s) for map %s', len(data['votes']), data['map']['uid'])
+        if data['map']['uid'] == _current_uid():
+            await _fetch_global_votes(aseco)
+
+    return delivery(aseco, karma_mx.OWNER, send, apply, prepare=prepare, ready=ready)
+
+
+async def _api_vote_multisend(aseco: Aseco, votes: dict[str, int]) -> None:
+    if getattr(aseco, 'is_maniaplanet', False):
+        if not _cfg.mx_karma_key or not _current_map.get('script') or not _current_uid():
+            return
+        course = {key: _current_map[key] for key in ('uid', 'script', 'name', 'author')}
+        course['seconds'] = max(0, int(time.time() - _current_map['observed_since']))
+        nicknames = _karma.get('mx_voter_names', {})
+        payload = {'map': course, 'votes': {login: {'vote': vote, 'nickname': nicknames.get(login, login)}
+                                           for login, vote in votes.items()}}
+        await _mx_karma_delivery(aseco).retain(payload, map_uid=course['uid'])
+        return
+    from uuid import uuid4
+    state_key = _karma.setdefault('delivery_key', uuid4().hex)
+    payload = {'map': {key: _current_map.get(key, '') for key in
+               ('uid', 'name', 'author', 'authortime', 'authorscore', 'nblaps', 'nbchecks', 'mood', 'environment')},
+               'votes': dict(votes), 'stunts': _get_mode(aseco) == 4,
+               'tmx': str(_karma.get('data', {}).get('tmx', '') or ''), 'state_key': state_key}
+    await _karma_delivery(aseco).retain(payload, map_uid=payload['map']['uid'])
+    _karma.setdefault('retained_votes', {}).update(votes)
+
+
+def _karma_delivery(aseco):
+    from pyxaseco.core.retained_delivery import delivery
+    def ready():
+        return bool(_cfg.enabled and _api_connected and _cfg.api_url and _api_authcode)
+    async def prepare(data):
+        if not ready():
+            raise _KarmaAuthenticationPending('Karma authentication not ready')
+        return data
+    async def send(data):
+        epoch = _api_epoch
+        endpoint, authcode = _cfg.api_url, _api_authcode
+        ch = data['map']
+        params = {'Action': 'Vote', 'login': str(aseco.server.serverlogin),
+                  'authcode': authcode, 'uid': ch['uid'],
+                  'map': base64.b64encode(str(ch['name']).encode()).decode(),
+                  'author': ch['author'], 'atime': 0 if data['stunts'] else ch['authortime'],
+                  'ascore': ch['authorscore'] if data['stunts'] else 0,
+                  'nblaps': ch['nblaps'], 'nbchecks': ch['nbchecks'],
+                  'mood': ch['mood'], 'env': ch['environment'], 'tmx': data['tmx'],
+                  'votes': '|'.join(f'{login}={int(vote)}' for login, vote in data['votes'].items())}
+        try:
+            body = await _api_get(endpoint + '?' + urllib.parse.urlencode(params), _cfg.wait_timeout)
+            if int(ET.fromstring(body).findtext('status') or 0) != 200:
+                raise RuntimeError('Unconfirmed Karma vote response')
+        except Exception:
+            if epoch == _api_epoch:
+                _disconnect_api(advance=True)
+            raise
+        return True
+    async def apply(_payload, _result, current):
+        logger.info('[ManiaKarma] Confirmed %d vote(s) for map %s', len(_payload['votes']), _payload['map']['uid'])
+        # A same-map restart keeps this vote state; returning to the UID later
+        # creates a different state and must not settle its newer votes.
+        same_state = bool(_payload.get('state_key')) and _payload['state_key'] == _karma.get('delivery_key')
+        valid_state = same_state if _payload.get('state_key') else current
+        if valid_state and _payload['map']['uid'] == _current_uid() and _cfg.enabled:
+            waiting = _karma.setdefault('retained_votes', {})
+            for login, vote in _payload['votes'].items():
+                if waiting.get(login) == vote:
+                    waiting.pop(login)
+            _karma['lookup_revision'] = _karma.get('lookup_revision', 0) + 1
+            await _fetch_global_votes(aseco)
+    return delivery(aseco, 'karma', send, apply, prepare=prepare, ready=ready)
+
+
+# ---------------------------------------------------------------------------
+# calculation / sync helpers
+# ---------------------------------------------------------------------------
+
+def _calculate_karma(which: list[str]) -> None:
+    for side in which:
+        if side == 'global' and _cfg.is_mp:
+            continue  # MXKarma reports the global average, not a local histogram.
+        votes = _karma[side]["votes"]
+        total = sum(int(votes[key]["count"] or 0) for key in VOTE_KEYS.values())
+        votes["total"] = total
+        if total <= 0:
+            votes["karma"] = 0
+            for key in VOTE_KEYS.values():
+                votes[key]["percent"] = 0.0
+            continue
+        for val, key in VOTE_KEYS.items():
+            votes[key]["percent"] = round(votes[key]["count"] * 100.0 / total, 2)
+        if _cfg.karma_calculation_method.upper() == "RASP":
+            positive = votes["fantastic"]["count"] + votes["beautiful"]["count"] + votes["good"]["count"]
+            votes["karma"] = int(round(positive * 100.0 / total))
+        else:
+            score = sum(int(votes[key]["count"] or 0) * value for key, value in VOTE_SCORES.items())
+            votes["karma"] = int(round(score / total))
+
+
+async def _load_local_karma() -> None:
+    local_votes = _karma["local"]["votes"]
+    for key in VOTE_KEYS.values():
+        local_votes[key]["count"] = 0
+        local_votes[key]["percent"] = 0.0
+    local_votes["total"] = 0
+    local_votes["karma"] = 0
+    players = await _get_local_votes(_current_map.get("id"), None)
+    _karma["local"]["players"] = players
+    for data in players.values():
+        vote = int(data.get("vote", 0) or 0)
+        key = VOTE_KEYS.get(vote)
+        if key:
+            local_votes[key]["count"] += 1
+    _calculate_karma(["local"])
+
+
+async def _fetch_global_votes(aseco: Aseco, target_login: str | None = None) -> None:
+    global _lookup_retrytime
+    if not _cfg.enabled or not _current_uid():
+        return
+    if getattr(aseco, 'is_maniaplanet', False):
+        if not target_login or not _karma.get('global_loaded'):
+            await _fetch_mx_rating(aseco)
+        return
+    players = [target_login] if target_login else [p.login for p in _players_all(aseco)]
+    if not players:
+        # Player-connect requests resume lookups; do not poll with player= empty.
+        _lookup_retrytime = 0
+        return
+    if not _api_connected or not _cfg.api_url:
+        if not _retrytime:
+            await _api_auth(aseco)
+        return
+    pending_at_request = dict(_karma.get('new', {}).get('players', {}))
+    revision = _karma.get('lookup_revision', 0)
+    epoch = _api_epoch
+    params = {'Action': 'Get', 'login': str(aseco.server.serverlogin), 'authcode': _api_authcode,
+              'uid': str(_current_map.get('uid', '')),
+              'map': base64.b64encode(str(_current_map.get('name', '')).encode()).decode(),
+              'author': str(_current_map.get('author', '')),
+              'env': str(_current_map.get('environment', '')), 'player': '|'.join(players)}
+    async def apply(body):
+        global _lookup_retrytime
+        if not _cfg.enabled or epoch != _api_epoch:
+            return
+        if revision != _karma.get('lookup_revision', 0):
+            return
+        result = _parse_global_votes(body)
+        if not result:
+            if not _players_all(aseco):
+                _lookup_retrytime = 0
+                return
+            # Map-level errors (notably 607) keep the authenticated session and
+            # Vote delivery intact. Only service failures select another provider.
+            _lookup_retrytime = int(asyncio.get_running_loop().time()) + 60
+            reason = 'empty or unavailable response'
+            unavailable = not body
+            if body:
+                try:
+                    response = ET.fromstring(body)
+                    status = int(response.findtext('status') or 0)
+                    reason = f'API status {status}' if status != 200 else 'missing or invalid vote data'
+                    unavailable = status == 200 or 500 <= status < 600
+                except (ET.ParseError, ValueError, TypeError):
+                    reason = 'malformed XML or status'
+                    unavailable = True
+            if unavailable and len(_providers()) > 1:
+                logger.warning('[ManiaKarma] Provider unavailable (%s); trying the other provider', reason)
+                _disconnect_api(advance=True)
+                return
+            logger.warning('[ManiaKarma] Vote lookup unavailable (%s); lookup retry deferred', reason)
+            return
+        _lookup_retrytime = 0
+        if pending_at_request != _karma.get('new', {}).get('players', {}):
+            return
+        # A local vote made while the lookup was running is newer than the
+        # server snapshot. Keep those votes until their retained send completes.
+        pending = dict(_karma.get('retained_votes', {}))
+        pending.update(_karma.get('new', {}).get('players', {}))
+        if pending:
+            return
+        first_loaded = not _karma.get('global_loaded', False)
+        _karma['global_loaded'] = True
+        for login, pdata in result.get('players', {}).items():
+            if login not in pending:
+                _karma['global']['players'][login] = {
+                    'vote': int(pdata.get('vote', 0)), 'previous': int(pdata.get('previous', 0))}
+        gvotes = _karma['global']['votes']
+        for key in VOTE_KEYS.values():
+            gvotes[key] = dict(result.get(key, {'count': 0, 'percent': 0.0}))
+        gvotes['total'], gvotes['karma'] = int(result['total']), int(result['karma'])
+        if _cfg.sync_global_karma_local:
+            await _sync_global_and_local('global', False)
+        await _send_widget_combination(aseco, ['cups_values'], None)
+        for player in _players_all(aseco):
+            await _send_widget_combination(aseco, ['player_marker'], player)
+        await _send_loading_indicator(aseco, False, _cfg.current_state)
+        if first_loaded and _cfg.show_at_start and target_login is None:
+            await _send_map_karma_message(aseco, None)
+    await _queue_karma(aseco, _cfg.api_url + '?' + urllib.parse.urlencode(params),
+                      apply, key=f'votes:{target_login}:{revision}')
+
+
+def _rebuild_counts_from_players(side: str) -> None:
+    votes = _karma[side]["votes"]
+    for key in VOTE_KEYS.values():
+        votes[key]["count"] = 0
+        votes[key]["percent"] = 0.0
+    for pdata in _karma[side]["players"].values():
+        key = VOTE_KEYS.get(int(pdata.get("vote", 0) or 0))
+        if key:
+            votes[key]["count"] += 1
+    _calculate_karma([side])
+
+
+async def _sync_global_and_local(source: str, setup_global: bool = False) -> None:
+    destination = "local" if source == "global" else "global"
+    players = _karma.get(source, {}).get("players", {})
+    if not players:
+        return
+    changed_dest = False
+    changed_local_db: dict[str, int] = {}
+    for login, pdata in players.items():
+        vote = int(pdata.get("vote", 0) or 0)
+        if vote == 0:
+            continue
+        dest_vote = int(_karma[destination]["players"].get(login, {}).get("vote", 0) or 0)
+        if dest_vote != vote:
+            _karma[destination]["players"][login] = {"vote": vote, "previous": dest_vote}
+            changed_dest = True
+            if destination == "local":
+                changed_local_db[login] = vote
+            if setup_global and source == "local":
+                _karma["new"]["players"][login] = vote
+    if changed_dest:
+        _rebuild_counts_from_players(destination)
+    if changed_local_db and _cfg.save_karma_also_local:
+        await _save_local_votes(changed_local_db)
+
+
+# ---------------------------------------------------------------------------
+# UI builders
+# ---------------------------------------------------------------------------
+
+def _build_widget_skeleton(mode: int) -> str:
+    gm = _cfg.gm_cfg(mode)
+    is_score = mode == 7
+    bg_style = _cfg.score_bg_style if is_score else _cfg.race_bg_style
+    bg_substyle = _cfg.score_bg_substyle if is_score else _cfg.race_bg_substyle
+    title_style = _cfg.score_title_style if is_score else _cfg.race_title_style
+    title_substyle = _cfg.score_title_substyle if is_score else _cfg.race_title_substyle
+    title = _cfg.score_title if is_score else _cfg.race_title
+    icon_style = _cfg.score_icon_style if is_score else _cfg.race_icon_style
+    icon_substyle = _cfg.score_icon_substyle if is_score else _cfg.race_icon_substyle
+
+    parts = [f'<manialink id="{ML_SKELETON}">', f'<frame posn="{gm.pos_x} {gm.pos_y} 10">']
+    if is_score:
+        parts.append(f'<quad posn="0 0 0.02" sizen="15.76 10.75" style="{bg_style}" substyle="{bg_substyle}"/>')
+    else:
+        parts.append(f'<quad posn="0 0 0.02" sizen="15.76 10.75" action="{ACT_OPEN_DETAIL}" style="{bg_style}" substyle="{bg_substyle}"/>')
+        parts.append(
+            f'<quad posn="{-0.3 if gm.pos_x > 0 else 12.46} -7.4 0.05" sizen="3.5 3.5" image="{_cfg.img_open_left if gm.pos_x > 0 else _cfg.img_open_right}"/>'
+        )
+    parts.append('<frame posn="0 0 0">')
+    parts.append(f'<quad posn="0.4 -0.3 3" sizen="14.96 2" url="{_track_page_url_dummy()}" style="{title_style}" substyle="{title_substyle}"/>')
+    if gm.pos_x > 0:
+        parts.append(f'<quad posn="0.6 -0.15 3.1" sizen="2.3 2.3" style="{icon_style}" substyle="{icon_substyle}"/>')
+        parts.append(f'<label posn="3.2 -0.6 3.2" sizen="10 0" halign="left" textsize="1" text="{title}"/>')
+    else:
+        parts.append(f'<quad posn="13.1 -0.15 3.1" sizen="2.3 2.3" style="{icon_style}" substyle="{icon_substyle}"/>')
+        parts.append(f'<label posn="12.86 -0.6 3.2" sizen="10 0" halign="right" textsize="1" text="{title}"/>')
+    parts.append(f'<frame posn="1.83 -8.3 1"><quad posn="0.2 -0.08 0.1" sizen="11.8 1.4" action="{ACT_IGNORE}" bgcolor="0000"/></frame>')
+    buttons = [
+        (1.83, ACT_VOTE_P3, _cfg.bg_pos_default, _cfg.bg_pos_focus, _cfg.text_pos_color, '+++', '0.8', '-0.25'),
+        (3.83, ACT_VOTE_P2, _cfg.bg_pos_default, _cfg.bg_pos_focus, _cfg.text_pos_color, '++', '0.8', '-0.25'),
+        (5.83, ACT_VOTE_P1, _cfg.bg_pos_default, _cfg.bg_pos_focus, _cfg.text_pos_color, '+', '0.8', '-0.25'),
+        (7.83, ACT_VOTE_N1, _cfg.bg_neg_default, _cfg.bg_neg_focus, _cfg.text_neg_color, '-', '0.9', '0'),
+        (9.83, ACT_VOTE_N2, _cfg.bg_neg_default, _cfg.bg_neg_focus, _cfg.text_neg_color, '--', '0.9', '0'),
+        (11.83, ACT_VOTE_N3, _cfg.bg_neg_default, _cfg.bg_neg_focus, _cfg.text_neg_color, '---', '0.9', '0'),
+    ]
+    for bx, act, c1, c2, tc, txt, scale, ty in buttons:
+        parts.append(f'<frame posn="{bx} -8.5 1">')
+        parts.append(f'<label posn="0.2 -0.08 0.2" sizen="1.8 1.4" action="{act}" focusareacolor1="{c1}" focusareacolor2="{c2}" text=" "/>')
+        parts.append(f'<label posn="1.12 {ty} 0.4" sizen="1.8 0" textsize="1" scale="{scale}" halign="center" textcolor="{tc}" text="{txt}"/>')
+        parts.append('</frame>')
+    parts.append('</frame></frame></manialink>')
+    return ''.join(parts)
+
+
+def _track_page_url_dummy() -> str:
+    uid = urllib.parse.quote(str(_current_map.get("uid", "") or ""))
+    env = urllib.parse.quote(str(_current_map.get("environment", "") or ""))
+    return f"http://{_active_website()}/goto?uid={uid}&amp;env={env}&amp;game=TmForever"
+
+
+def _widget_cup_content(*, sample=False) -> str:
+    if sample:
+        global_votes = {"karma": 76, "total": 42, "fantastic": {"count": 20},
+                        "beautiful": {"count": 8}, "good": {"count": 4}}
+        local_votes = {"karma": 60, "total": 5}
+    else:
+        global_votes = _karma["global"]["votes"]
+        local_votes = _karma["local"]["votes"]
+
+    total_cups = 10
+    cup_offset = [0.8, 0.85, 0.85, 0.875, 0.90, 0.925, 0.95, 0.975, 1.0, 1.025]
+    cup_gold_amount = 0
+    use_global = bool(global_votes["total"]) if _cfg.is_mp else global_votes["karma"] > 0
+    source = global_votes if use_global else local_votes
+    if source["karma"] > 0 and source["total"] > 0:
+        if _cfg.karma_calculation_method.upper() == "RASP" and not (_cfg.is_mp and source is global_votes):
+            positive = source["fantastic"]["count"] + source["beautiful"]["count"] + source["good"]["count"]
+            cup_gold_amount = round(positive / source["total"] * total_cups)
+        else:
+            cup_gold_amount = int(source["karma"] / total_cups)
+    cup_gold_amount = max(0, min(total_cups, cup_gold_amount))
+
+    cups_xml = []
+    for i in range(total_cups):
+        layer = f"0.{i + 1:02d}"
+        width = 1.1 + (i / total_cups) * cup_offset[i]
+        height = 1.5 + (i / total_cups) * cup_offset[i]
+        image = _cfg.img_cup_gold if i < cup_gold_amount else _cfg.img_cup_silver
+        cups_xml.append(f'<quad posn="{cup_offset[i] * i} 0 {layer}" sizen="{width} {height}" valign="bottom" image="{image}"/>')
+
+    def _color(value: int, local: bool) -> str:
+        if value <= 30:
+            return 'F00F' if local else 'D00F'
+        if value <= 60:
+            return 'FF0F' if local else 'DD0F'
+        return '0F0F' if local else '0D0F'
+
+    parts = []
+    parts.append(f'<frame posn="2.23 -4.95 0.01">{"".join(cups_xml)}</frame>')
+    parts.append('<frame posn="2.1 -5.35 0">')
+    parts.append('<quad posn="0 -0.1 1" sizen="0.1 2.85" bgcolor="FFF5"/>')
+    parts.append('<label posn="0.3 -0.1 1" sizen="4 1.1" textsize="1" scale="0.65" textcolor="FFFF" text="GLOBAL"/>')
+    loaded = sample or _karma.get('global_loaded', False)
+    global_score = str(global_votes['karma']) if loaded else '--'
+    global_label = ((_number(global_votes['total']) + ' ' +
+                     (_cfg.msg_vote_singular if global_votes['total'] == 1 else _cfg.msg_vote_plural))
+                    if loaded else ('Not configured' if _cfg.is_mp and not _cfg.mx_karma_key
+                                    else 'Loading...' if _api_connected and not _lookup_retrytime else 'Unavailable'))
+    parts.append(f'<label posn="3.3 0 1" sizen="3 1.4" textsize="1" scale="0.9" textcolor="{_color(global_votes["karma"], False)}" text="$O{global_score}"/>')
+    parts.append(f'<label posn="0.3 -1.3 1" sizen="6.6 1.2" textsize="1" scale="0.85" textcolor="0F3F" text="{global_label}"/>')
+    parts.append('</frame>')
+    parts.append('<frame posn="8.75 -5.35 0">')
+    parts.append('<quad posn="0 -0.1 1" sizen="0.1 2.85" bgcolor="FFF5"/>')
+    parts.append('<label posn="0.3 -0.1 1" sizen="4 1.1" textsize="1" scale="0.65" textcolor="FFFF" text="LOCAL " />')
+    parts.append(f'<label posn="3 0 1" sizen="3 1.4" textsize="1" scale="0.9" textcolor="{_color(local_votes["karma"], True)}" text="$O{local_votes["karma"]}"/>')
+    parts.append(f'<label posn="0.3 -1.3 1" sizen="6.6 1.2" textsize="1" scale="0.85" textcolor="0F3F" text="{_number(local_votes["total"])} {(_cfg.msg_vote_singular if local_votes["total"] == 1 else _cfg.msg_vote_plural)}"/>')
+    parts.append('</frame>')
+    return ''.join(parts)
+
+
+def _build_widget_cups(mode: int, *, sample=False) -> str:
+    gm = _cfg.gm_cfg(mode)
+    return (f'<manialink id="{ML_CUPS}"><frame posn="{gm.pos_x} {gm.pos_y} 10">'
+            f'{_widget_cup_content(sample=sample)}</frame></manialink>')
+
+
+def _vote_button_overrides(player: Any) -> dict[int, tuple[str, int]]:
+    _ensure_player_state(player)
+    vote = _effective_vote(player.login)
+    finished = int(player.data["ManiaKarma"].get("FinishedMapCount", 0) or 0)
+    locked = _cfg.require_finish > 0 and finished < _cfg.require_finish and vote == 0
+    preset: dict[int, tuple[str, int]] = {}
+    for v in (3, 2, 1, -1, -2, -3):
+        if vote == v:
+            preset[v] = (_cfg.bg_disabled, ACT_IGNORE)
+        elif locked:
+            preset[v] = (_cfg.bg_vote, ACT_VOTE_LOCKED)
+    return preset
+
+
+def _build_player_marker(player: Any, mode: int) -> str:
+    preset = _vote_button_overrides(player)
+    positions = {3: 1.83, 2: 3.83, 1: 5.83, -1: 7.83, -2: 9.83, -3: 11.83}
+    gm = _cfg.gm_cfg(mode)
+    marker = []
+    for v, (bg, act) in preset.items():
+        marker.append(f'<frame posn="{positions[v]} -8.5 1"><quad posn="0.2 -0.08 0.3" sizen="1.8 1.4" action="{act}" bgcolor="{bg}"/></frame>')
+    xml = [f'<manialink id="{ML_MARKER}">']
+    if marker:
+        xml.append(f'<frame posn="{gm.pos_x} {gm.pos_y} 10">{"".join(marker)}</frame>')
+    xml.append('</manialink>')
+    return ''.join(xml)
+
+
+def _build_mp_widget(mode: int, player: Any | None = None, *, sample=False) -> str:
+    gm = _cfg.gm_cfg(mode)
+    is_score = mode == 7
+    style_prefix = 'score_' if is_score else 'race_'
+    appearance = {key: _sanitize_ml_text(getattr(_cfg, style_prefix + key)) for key in
+                  ('title', 'title_style', 'title_substyle', 'icon_style', 'icon_substyle',
+                   'bg_style', 'bg_substyle')}
+    title = appearance['title'].replace('ManiaKarma', 'MXKarma')
+    parts = [
+        f'<manialink id="{ML_SKELETON}"><frame posn="{gm.pos_x} {gm.pos_y} 10">',
+        f'<quad posn="0 0 0" sizen="15.76 10.75" style="{appearance["bg_style"]}" substyle="{appearance["bg_substyle"]}"/>',
+        f'<quad posn="0.4 -0.36 0.02" sizen="14.96 2" style="{appearance["title_style"]}" substyle="{appearance["title_substyle"]}"/>',
+        f'<quad posn="0.6 -0.15 0.04" sizen="2.3 2.3" style="{appearance["icon_style"]}" substyle="{appearance["icon_substyle"]}"/>',
+        f'<label posn="3.2 -0.6 0.04" sizen="11.4 1.5" textsize="1" textcolor="FFFF" text="{title}"/>',
+        f'<frame posn="0 0 0.10">{_widget_cup_content(sample=sample)}</frame>',
+        f'<quad posn="0 0 4" sizen="15.76 {2.5 if is_score else 10.75}" action="{ACT_OPEN_DETAIL}" bgcolor="FFFFFF01"/>',
+    ]
+    overrides = _vote_button_overrides(player) if player is not None else {}
+    for index, (vote, action, caption) in enumerate((
+            (3, ACT_VOTE_P3, '+++'), (2, ACT_VOTE_P2, '++'), (1, ACT_VOTE_P1, '+'),
+            (-1, ACT_VOTE_N1, '-'), (-2, ACT_VOTE_N2, '--'), (-3, ACT_VOTE_N3, '---'))):
+        positive = vote > 0
+        fill = _cfg.bg_pos_default if positive else _cfg.bg_neg_default
+        focus = _cfg.bg_pos_focus if positive else _cfg.bg_neg_focus
+        text = _cfg.text_pos_color if positive else _cfg.text_neg_color
+        if vote in overrides:
+            fill, action = overrides[vote]
+            focus = fill
+        parts.append(
+            f'<frame posn="{2.03 + index * 2:g} -8.58 5">'
+            f'<quad posn="0 0 0" sizen="1.8 1.4" action="{action}" bgcolor="{fill}" bgcolorfocus="{focus}"/>'
+            f'<label posn="0.9 -0.24 0.01" sizen="1.8 1.2" halign="center" textsize="1"'
+            f' scale="0.8" textcolor="{text}" text="{caption}"/>'
+            '</frame>')
+    parts.append('</frame></manialink>')
+    return ''.join(parts)
+
+
+async def _send_mp_widget(aseco: Aseco, widgets: list[str], player: Any | None) -> None:
+    mode = (7 if 'skeleton_score' in widgets else _get_mode(aseco) if 'skeleton_race' in widgets
+            else _cfg.current_state)
+    cleared = []
+    if 'hide_all' in widgets or 'hide_window' in widgets:
+        cleared.append(ML_WINDOWS)
+    if 'hide_all' in widgets or not _cfg.enabled or not _cfg.gm_cfg(mode).enabled:
+        cleared.extend((ML_SKELETON, ML_CUPS, ML_MARKER, ML_CONNECTION, ML_LOADING))
+    draw = (ML_SKELETON not in cleared and any(widget in widgets for widget in
+            ('skeleton_score', 'skeleton_race', 'cups_values', 'player_marker')))
+    if draw:
+        # Clear pages sent by older builds. They are now part of the same card.
+        cleared.extend((ML_CUPS, ML_MARKER))
+    if not draw and not cleared:
+        return
+    empty = ''.join(f'<manialink id="{page}"></manialink>' for page in cleared)
+    groups: dict[str, list[str]] = {}
+    for recipient in ([player] if player is not None else _players_all(aseco)):
+        card = _build_mp_widget(mode, recipient) if draw else ''
+        groups.setdefault(f'<manialinks>{empty}{card}</manialinks>', []).append(recipient.login)
+    for xml, logins in groups.items():
+        await deliver_ui(aseco, 'SendDisplayManialinkPageToLogin', ','.join(logins), xml, 0, False)
+
+
+async def _send_widget_combination(aseco: Aseco, widgets: list[str], player: Any | None = None) -> None:
+    if not _players_all(aseco):
+        return
+    if getattr(aseco, 'is_maniaplanet', False):
+        await _send_mp_widget(aseco, widgets, player)
+        return
+    xml = ['<?xml version="1.0" encoding="UTF-8"?><manialinks>']
+    for widget in widgets:
+        if widget == 'hide_all':
+            for ml in (ML_WINDOWS, ML_SKELETON, ML_MARKER, ML_CUPS, ML_CONNECTION, ML_LOADING):
+                xml.append(f'<manialink id="{ml}"></manialink>')
+            break
+        if widget == 'hide_window':
+            xml.append(f'<manialink id="{ML_WINDOWS}"></manialink>')
+            continue
+        if not _cfg.enabled:
+            for ml in (ML_SKELETON, ML_MARKER, ML_CUPS, ML_CONNECTION, ML_LOADING):
+                xml.append(f'<manialink id="{ml}"></manialink>')
+            continue
+        gm_enabled = _cfg.gm_cfg(_cfg.current_state).enabled
+        if not gm_enabled:
+            for ml in (ML_SKELETON, ML_MARKER, ML_CUPS):
+                xml.append(f'<manialink id="{ml}"></manialink>')
+            continue
+        if widget == 'skeleton_race':
+            xml.append(_build_widget_skeleton(_get_mode(aseco)))
+        elif widget == 'skeleton_score':
+            xml.append(_build_widget_skeleton(7))
+        elif widget == 'cups_values':
+            xml.append(_build_widget_cups(_cfg.current_state))
+        elif widget == 'player_marker' and player is not None:
+            xml.append(_build_player_marker(player, _cfg.current_state))
+    xml.append('</manialinks>')
+    payload = ''.join(xml)
+    if player is not None:
+        await deliver_ui(aseco, 'SendDisplayManialinkPageToLogin', player.login, payload, 0, False)
+    else:
+        await deliver_ui(aseco, 'SendDisplayManialinkPage', payload, 0, False)
+
+
+async def _send_connection_status(aseco: Aseco, status: bool, mode: int) -> None:
+    xml = [f'<manialink id="{ML_CONNECTION}">']
+    if not _cfg.enabled:
+        xml.append('</manialink>')
+        await deliver_ui(aseco, 'SendDisplayManialinkPage', ''.join(xml), 0, False)
+        return
+    if status is False:
+        await _send_loading_indicator(aseco, False, mode)
+        gm = _cfg.gm_cfg(mode)
+        xml.append(f'<frame posn="{gm.pos_x} {gm.pos_y} 20"><quad posn="0.5 -5.2 0.9" sizen="1.4 1.4" style="Icons128x128_1" substyle="Multiplayer"/></frame>')
+    xml.append('</manialink>')
+    await deliver_ui(aseco, 'SendDisplayManialinkPage', ''.join(xml), 0, False)
+
+
+async def _send_loading_indicator(aseco: Aseco, status: bool, mode: int) -> None:
+    xml = [f'<manialink id="{ML_LOADING}">']
+    if status and _cfg.enabled and _cfg.img_progress_indicator:
+        gm = _cfg.gm_cfg(mode)
+        xml.append(f'<frame posn="{gm.pos_x} {gm.pos_y} 20"><quad posn="0.5 -5.2 0.9" sizen="1.4 1.4" image="{_cfg.img_progress_indicator}"/></frame>')
+    xml.append('</manialink>')
+    await deliver_ui(aseco, 'SendDisplayManialinkPage', ''.join(xml), 0, False)
+
+
+async def _send_window(aseco: Aseco, login: str, window_xml: str) -> None:
+    payload = f'<?xml version="1.0" encoding="UTF-8"?><manialinks>{window_xml}</manialinks>'
+    await deliver_ui(aseco, 'SendDisplayManialinkPageToLogin', login, payload, 0, False)
+
+
+def _window_backdrop(aseco: Aseco) -> str:
+    if getattr(aseco, 'is_maniaplanet', False):
+        return '<quad posn="-0.2 0.2 0" sizen="80.4 55.7" bgcolor="19222DE8"/>'
+    return (
+        '<quad posn="0.8 -0.8 0.01" sizen="78.4 53.7" bgcolor="3336"/>' * 2
+        + '<quad posn="-0.2 0.2 0.04" sizen="80.4 55.7" style="Bgs1InRace" substyle="BgCard3"/>'
+    )
+
+
+def _window_provider_footer(aseco: Aseco) -> str:
+    if getattr(aseco, 'is_maniaplanet', False):
+        if not _cfg.mx_karma_key:
+            return ''
+        return (
+            '<frame posn="28.6 -53.35 0.10">'
+            f'<quad posn="0 0 0" sizen="21.5 2.5" url="{MX_KARMA_SITE}" bgcolor="334658F0" bgcolorfocus="486278FF"/>'
+            '<label posn="10.75 -0.65 0.01" sizen="20 1" halign="center" textsize="1" scale="0.8" textcolor="FFFF" text="MORE INFO ON MXKARMA"/>'
+            '</frame>'
+        )
+    return (
+        '<frame posn="28.6 -53.35 0.10">'
+        f'<quad posn="0 0 0.01" sizen="21.5 2.5" url="{_track_page_url_dummy()}" style="Bgs1" substyle="BgIconBorder"/>'
+        f'<label posn="1.5 -0.65 0.01" sizen="30 1" textsize="1" scale="0.8" textcolor="000F" text="MORE INFO ON {_sanitize_ml_text(_active_website().removeprefix("www.").upper())}"/>'
+        '</frame>'
+    )
+
+
+def _reminder_attribution(aseco: Aseco) -> str:
+    if getattr(aseco, 'is_maniaplanet', False):
+        return 'powered by MXKarma' if _cfg.mx_karma_key else 'Local server votes'
+    return f'powered by {_sanitize_ml_text(_active_website().removeprefix("www."))}'
+
+
+async def _show_help_window(aseco: Aseco, player: Any, message: str) -> None:
+    logo = f'<quad posn="57.2 -8.0 0.05" sizen="18 18" image="{_cfg.img_maniakarma_logo}" url="http://{_sanitize_ml_text(_active_website())}"/>' if _cfg.img_maniakarma_logo and not getattr(aseco, 'is_maniaplanet', False) else ''
+    if getattr(aseco, 'is_maniaplanet', False):
+        from pyxaseco.maniaplanet_ui import provider_label
+        message = provider_label(message)
+    heading = 'MXKarma' if getattr(aseco, 'is_maniaplanet', False) else 'ManiaKarma'
+    msg = _sanitize_ml_text(aseco.format_colors((message or '').replace('{br}', '\n')))
+    xml = (
+        f'<manialink id="{ML_WINDOWS}">'
+        f'<frame posn="-40.1 30.45 18.50">'
+        f'{_window_backdrop(aseco)}'
+        f'<quad posn="0.8 -1.3 0.02" sizen="78.4 3" bgcolor="29F9"/>'
+        f'<quad posn="0.8 -4.3 0.03" sizen="78.4 0.1" bgcolor="FFF9"/>'
+        f'<quad posn="1.8 -1 0.04" sizen="3.2 3.2" style="Icons128x128_1" substyle="Rankings"/>'
+        f'<label posn="5.5 -1.9 0.04" sizen="74 0" textsize="2" scale="0.9" textcolor="FFFF" text="{heading} help"/>'
+        f'<frame posn="77.4 1.3 0.05">'
+        f'<quad posn="0 0 0.01" sizen="4 4" style="Icons64x64_1" substyle="ArrowDown"/>'
+        f'<quad posn="1.1 -1.35 0.02" sizen="1.8 1.75" bgcolor="EEEF"/>'
+        f'<quad posn="0.65 -0.7 0.03" sizen="2.6 2.6" action="{ACT_CLOSE}" style="Icons64x64_1" substyle="Close"/>'
+        f'</frame>'
+        f'<frame posn="3.2 -7.4 0.04">'
+        f'{logo}'
+        f'<label posn="0 0 0.05" sizen="52 0" autonewline="1" textsize="1" scale="0.9" textcolor="FFFF" text="{msg}"/>'
+        f'</frame>'
+        f'{_window_provider_footer(aseco)}'
+        f'</frame></manialink>'
+    )
+    _window_state[player.login] = ("help", 0)
+    await _send_window(aseco, player.login, xml)
+
+
+async def _show_details_window(aseco: Aseco, login: str) -> None:
+    g = _karma["global"]["votes"]
+    l = _karma["local"]["votes"]
+
+    def _karma_color(value: int, local: bool = False) -> str:
+        if _cfg.karma_calculation_method.upper() != "DEFAULT":
+            return "$FFF"
+        if 0 <= value <= 30:
+            return "$F00" if local else "$D00"
+        if 31 <= value <= 60:
+            return "$FF0" if local else "$DD0"
+        if 61 <= value <= 100:
+            return "$0F0" if local else "$0D0"
+        return "$FFF"
+
+    def _window_start(title: str, buttons: str) -> list[str]:
+        return [
+            f'<manialink id="{ML_WINDOWS}">',
+            '<frame posn="-40.1 30.45 18.50">',
+            _window_backdrop(aseco),
+            '<quad posn="0.8 -1.3 0.02" sizen="78.4 3" bgcolor="29F9"/>',
+            '<quad posn="0.8 -4.3 0.03" sizen="78.4 0.1" bgcolor="FFF9"/>',
+            '<quad posn="1.8 -1 0.04" sizen="3.2 3.2" style="Icons128x128_1" substyle="Rankings"/>',
+            f'<label posn="5.5 -1.9 0.04" sizen="74 0" textsize="2" scale="0.9" textcolor="FFFF" text="{_sanitize_ml_text(title)}"/>',
+            '<frame posn="77.4 1.3 0.05">',
+            '<quad posn="0 0 0.01" sizen="4 4" style="Icons64x64_1" substyle="ArrowDown"/>',
+            '<quad posn="1.1 -1.35 0.02" sizen="1.8 1.75" bgcolor="EEEF"/>',
+            f'<quad posn="0.65 -0.7 0.03" sizen="2.6 2.6" action="{ACT_CLOSE}" style="Icons64x64_1" substyle="Close"/>',
+            '</frame>',
+            buttons,
+        ]
+
+    def _window_footer() -> str:
+        return (
+            f'{_window_provider_footer(aseco)}'
+            '</frame>'
+            '</manialink>'
+        )
+
+    buttons = (
+        '<frame posn="67.05 -53.2 0.04">'
+        f'<quad posn="1.65 0 0.12" sizen="3.2 3.2" action="{ACT_REFRESH}" style="Icons64x64_1" substyle="Refresh"/>'
+        '<quad posn="4.95 0 0.12" sizen="3.2 3.2" style="Icons64x64_1" substyle="StarGold"/>'
+        '<quad posn="4.95 0 0.13" sizen="3.2 3.2" style="Icons64x64_1" substyle="StarGold"/>'
+        f'<quad posn="8.25 0 0.12" sizen="3.2 3.2" action="{ACT_OPEN_WHO}" style="Icons64x64_1" substyle="ArrowNext"/>'
+        '</frame>'
+    )
+
+    def _percent_text(v: Any) -> str:
+        try:
+            return _number(float(v), 2)
+        except Exception:
+            return _number(0.0, 2)
+
+    def _vote_frame(base_x: float, votes: dict[str, Any]) -> str:
+        h_fantastic = (float(votes['fantastic']['percent']) / 3.3333333333) if float(votes['fantastic']['percent']) != 0 else 0.0
+        h_beautiful = (float(votes['beautiful']['percent']) / 3.3333333333) if float(votes['beautiful']['percent']) != 0 else 0.0
+        h_good = (float(votes['good']['percent']) / 3.3333333333) if float(votes['good']['percent']) != 0 else 0.0
+        h_bad = (float(votes['bad']['percent']) / 3.3333333333) if float(votes['bad']['percent']) != 0 else 0.0
+        h_poor = (float(votes['poor']['percent']) / 3.3333333333) if float(votes['poor']['percent']) != 0 else 0.0
+        h_waste = (float(votes['waste']['percent']) / 3.3333333333) if float(votes['waste']['percent']) != 0 else 0.0
+
+        xml = [f'<frame posn="{base_x} -0.6 0.01">', '<format textsize="1" textcolor="FFFF"/>']
+
+        for pct, y in ((100, 12), (90, 15), (80, 18), (70, 21), (60, 24), (50, 27), (40, 30), (30, 33), (20, 36), (10, 39)):
+            xml.append(f'<label posn="4.7 -{y - 0.65:.2f} 0.03" sizen="3 0" halign="right" scale="0.8" text="{pct}%"/>')
+            xml.append(f'<quad posn="5.5 -{y} 0.04" sizen="1.5 0.1" bgcolor="FFFD"/>')
+            xml.append(f'<quad posn="7.1 -{y} 0.04" sizen="28 0.1" bgcolor="FFF5"/>')
+        xml.append('<quad posn="7.1 -42 0.04" sizen="28 0.1" bgcolor="FFFD"/>')
+        xml.append('<quad posn="7 -12 0.03" sizen="0.1 30" bgcolor="FFFD"/>')
+
+        xml.append(f'<label posn="10.2 -{40 - h_fantastic:.2f} 0.06" sizen="3.8 0" halign="center" textcolor="FFFF" scale="0.8" text="{_percent_text(votes["fantastic"]["percent"])}%"/>')
+        xml.append(f'<label posn="14.7 -{40 - h_beautiful:.2f} 0.06" sizen="3.8 0" halign="center" textcolor="FFFF" scale="0.8" text="{_percent_text(votes["beautiful"]["percent"])}%"/>')
+        xml.append(f'<label posn="19.2 -{40 - h_good:.2f} 0.06" sizen="3.8 0" halign="center" textcolor="FFFF" scale="0.8" text="{_percent_text(votes["good"]["percent"])}%"/>')
+        xml.append(f'<quad posn="10 -{42 - h_fantastic:.2f} 0.02" sizen="4 {h_fantastic:.2f}" halign="center" bgcolor="170F"/>')
+        xml.append(f'<quad posn="14.5 -{42 - h_beautiful:.2f} 0.02" sizen="4 {h_beautiful:.2f}" halign="center" bgcolor="170F"/>')
+        xml.append(f'<quad posn="19 -{42 - h_good:.2f} 0.02" sizen="4 {h_good:.2f}" halign="center" bgcolor="170F"/>')
+        xml.append(f'<quad posn="10 -{42 - h_fantastic:.2f} 0.03" sizen="4 {h_fantastic:.2f}" halign="center" style="BgRaceScore2" substyle="CupFinisher"/>')
+        xml.append(f'<quad posn="14.5 -{42 - h_beautiful:.2f} 0.03" sizen="4 {h_beautiful:.2f}" halign="center" style="BgRaceScore2" substyle="CupFinisher"/>')
+        xml.append(f'<quad posn="19 -{42 - h_good:.2f} 0.03" sizen="4 {h_good:.2f}" halign="center" style="BgRaceScore2" substyle="CupFinisher"/>')
+        xml.append(f'<quad posn="10 -{42 - h_fantastic:.2f} 0.035" sizen="4.4 {min(h_fantastic, 3):.2f}" halign="center" style="BgsPlayerCard" substyle="BgRacePlayerLine"/>')
+        xml.append(f'<quad posn="14.5 -{42 - h_beautiful:.2f} 0.035" sizen="4.4 {min(h_beautiful, 3):.2f}" halign="center" style="BgsPlayerCard" substyle="BgRacePlayerLine"/>')
+        xml.append(f'<quad posn="19 -{42 - h_good:.2f} 0.035" sizen="4.4 {min(h_good, 3):.2f}" halign="center" style="BgsPlayerCard" substyle="BgRacePlayerLine"/>')
+
+        xml.append(f'<label posn="23.7 -{40 - h_bad:.2f} 0.06" sizen="3.8 0" halign="center" textcolor="FFFF" scale="0.8" text="{_percent_text(votes["bad"]["percent"])}%"/>')
+        xml.append(f'<label posn="28.2 -{40 - h_poor:.2f} 0.06" sizen="3.8 0" halign="center" textcolor="FFFF" scale="0.8" text="{_percent_text(votes["poor"]["percent"])}%"/>')
+        xml.append(f'<label posn="32.7 -{40 - h_waste:.2f} 0.06" sizen="3.8 0" halign="center" textcolor="FFFF" scale="0.8" text="{_percent_text(votes["waste"]["percent"])}%"/>')
+        xml.append(f'<quad posn="23.5 -{42 - h_bad:.2f} 0.02" sizen="4 {h_bad:.2f}" halign="center" bgcolor="701F"/>')
+        xml.append(f'<quad posn="28 -{42 - h_poor:.2f} 0.02" sizen="4 {h_poor:.2f}" halign="center" bgcolor="701F"/>')
+        xml.append(f'<quad posn="32.5 -{42 - h_waste:.2f} 0.02" sizen="4 {h_waste:.2f}" halign="center" bgcolor="701F"/>')
+        xml.append(f'<quad posn="23.5 -{42 - h_bad:.2f} 0.03" sizen="4 {h_bad:.2f}" halign="center" style="BgRaceScore2" substyle="CupPotentialFinisher"/>')
+        xml.append(f'<quad posn="28 -{42 - h_poor:.2f} 0.03" sizen="4 {h_poor:.2f}" halign="center" style="BgRaceScore2" substyle="CupPotentialFinisher"/>')
+        xml.append(f'<quad posn="32.5 -{42 - h_waste:.2f} 0.03" sizen="4 {h_waste:.2f}" halign="center" style="BgRaceScore2" substyle="CupPotentialFinisher"/>')
+        xml.append(f'<quad posn="23.5 -{42 - h_bad:.2f} 0.035" sizen="4.4 {min(h_bad, 3):.2f}" halign="center" style="BgsPlayerCard" substyle="BgRacePlayerLine"/>')
+        xml.append(f'<quad posn="28 -{42 - h_poor:.2f} 0.035" sizen="4.4 {min(h_poor, 3):.2f}" halign="center" style="BgsPlayerCard" substyle="BgRacePlayerLine"/>')
+        xml.append(f'<quad posn="32.5 -{42 - h_waste:.2f} 0.035" sizen="4.4 {min(h_waste, 3):.2f}" halign="center" style="BgsPlayerCard" substyle="BgRacePlayerLine"/>')
+
+        xml.append('<label posn="3 -43 0.03" sizen="6 0" textcolor="FFFF" text="Votes:"/>')
+        xml.append(f'<label posn="10 -43 0.03" sizen="10 0" halign="center" text="{_number(int(votes["fantastic"]["count"] or 0))}"/>')
+        xml.append(f'<label posn="14.5 -43 0.03" sizen="10 0" halign="center" text="{_number(int(votes["beautiful"]["count"] or 0))}"/>')
+        xml.append(f'<label posn="19 -43 0.03" sizen="10 0" halign="center" text="{_number(int(votes["good"]["count"] or 0))}"/>')
+        xml.append(f'<label posn="23.5 -43 0.03" sizen="10 0" halign="center" text="{_number(int(votes["bad"]["count"] or 0))}"/>')
+        xml.append(f'<label posn="28 -43 0.03" sizen="10 0" halign="center" text="{_number(int(votes["poor"]["count"] or 0))}"/>')
+        xml.append(f'<label posn="32.5 -43 0.03" sizen="10 0" halign="center" text="{_number(int(votes["waste"]["count"] or 0))}"/>')
+        xml.append(f'<label posn="10 -45.05 0.03" sizen="10 0" halign="center" scale="0.8" text="$6C0{_cfg.msg_fantastic.capitalize()}"/>')
+        xml.append(f'<label posn="14.5 -45.05 0.03" sizen="10 0" halign="center" scale="0.8" text="$6C0{_cfg.msg_beautiful.capitalize()}"/>')
+        xml.append(f'<label posn="19 -45.05 0.03" sizen="10 0" halign="center" scale="0.8" text="$6C0{_cfg.msg_good.capitalize()}"/>')
+        xml.append(f'<label posn="23.5 -45.05 0.03" sizen="10 0" halign="center" scale="0.8" text="$F02{_cfg.msg_bad.capitalize()}"/>')
+        xml.append(f'<label posn="28 -45.05 0.03" sizen="10 0" halign="center" scale="0.8" text="$F02{_cfg.msg_poor.capitalize()}"/>')
+        xml.append(f'<label posn="32.5 -45.05 0.03" sizen="10 0" halign="center" scale="0.8" text="$F02{_cfg.msg_waste.capitalize()}"/>')
+        xml.append('<label posn="10 -46.05 0.03" sizen="10 0" halign="center" text="$6C0+++"/>')
+        xml.append('<label posn="14.5 -46.05 0.03" sizen="10 0" halign="center" text="$6C0++"/>')
+        xml.append('<label posn="19 -46.05 0.03" sizen="10 0" halign="center" text="$6C0+"/>')
+        xml.append('<label posn="23.5 -46.05 0.03" sizen="10 0" halign="center" text="$F02-"/>')
+        xml.append('<label posn="28 -46.05 0.03" sizen="10 0" halign="center" text="$F02--"/>')
+        xml.append('<label posn="32.5 -46.05 0.03" sizen="10 0" halign="center" text="$F02---"/>')
+        xml.append('</frame>')
+        return ''.join(xml)
+
+    def _player_marker(base_x: float, vote: int) -> str:
+        if vote == 3:
+            pos = 10
+        elif vote == 2:
+            pos = 14.5
+        elif vote == 1:
+            pos = 19
+        elif vote == -1:
+            pos = 23.5
+        elif vote == -2:
+            pos = 28
+        elif vote == -3:
+            pos = 32.5
+        else:
+            return ''
+        return (
+            f'<frame posn="{base_x} -48.5 0.02">'
+            f'<quad posn="{pos} 0 0.05" sizen="2.8 2.8" halign="center" style="Icons64x64_1" substyle="YellowHigh"/>'
+            f'<label posn="{pos} -2.5 0.03" sizen="6 0" halign="center" textsize="1" scale="0.85" textcolor="FFFF" text="Your vote"/>'
+            '</frame>'
+        )
+
+    heading = 'MXKarma' if getattr(aseco, 'is_maniaplanet', False) else 'ManiaKarma'
+    xml = _window_start(f'{heading} detailed vote statistic', buttons)
+    if not _cfg.is_mp or _karma.get('global_loaded'):
+        xml.append(f'<label posn="9.6 -6.5 0.03" sizen="20 0" textsize="2" scale="0.9" text="$FFFGlobal Karma: $O{_karma_color(int(g["karma"] or 0), False)}{int(g["karma"] or 0)}"/>')
+        xml.append(f'<label posn="37.6 -6.5 0.03" sizen="20 0" textsize="2" scale="0.9" halign="right" text="$FFF{_number(int(g["total"] or 0))} {(_cfg.msg_vote_singular if int(g["total"] or 0) == 1 else _cfg.msg_vote_plural)}"/>')
+    else:
+        xml.append('<label posn="9.6 -6.5 0.03" sizen="28 0" textsize="2" scale="0.9" textcolor="FFFF" text="Global Karma: --"/>')
+    xml.append(f'<label posn="46.6 -6.5 0.03" sizen="20 0" textsize="2" scale="0.9" text="$FFFLocal Karma: $O{_karma_color(int(l["karma"] or 0), True)}{int(l["karma"] or 0)}"/>')
+    xml.append(f'<label posn="74.6 -6.5 0.03" sizen="20 0" textsize="2" scale="0.9" halign="right" text="$FFF{_number(int(l["total"] or 0))} {(_cfg.msg_vote_singular if int(l["total"] or 0) == 1 else _cfg.msg_vote_plural)}"/>')
+    if _cfg.is_mp:
+        status = ('MXKarma provides a global rating and vote count.'
+                  if _karma.get('global_loaded') else 'MXKarma is unavailable.'
+                  if _cfg.mx_karma_key else 'Global voting is not configured.')
+        xml.append(f'<label posn="9.6 -11 0.03" sizen="28 2" textsize="1" autonewline="1" textcolor="FFFF" text="{status}"/>')
+    else:
+        xml.append(_vote_frame(2.6, g))
+    xml.append(_vote_frame(39.6, l))
+
+    if not _cfg.is_mp and login in _karma['global']['players']:
+        gvote = int(_karma['global']['players'].get(login, {}).get('vote', 0) or 0)
+        if gvote:
+            xml.append(_player_marker(2.6, gvote))
+    if login in _karma['local']['players']:
+        lvote = int(_karma['local']['players'].get(login, {}).get('vote', 0) or 0)
+        if lvote:
+            xml.append(_player_marker(39.6, lvote))
+
+    xml.append(_window_footer())
+    _window_state[login] = ("details", 0)
+    await _send_window(aseco, login, ''.join(xml))
+
+
+async def _show_who_window(aseco: Aseco, login: str, page: int = 0) -> None:
+    def _window_start(title: str, buttons: str) -> list[str]:
+        return [
+            f'<manialink id="{ML_WINDOWS}">',
+            '<frame posn="-40.1 30.45 18.50">',
+            _window_backdrop(aseco),
+            '<quad posn="0.8 -1.3 0.02" sizen="78.4 3" bgcolor="29F9"/>',
+            '<quad posn="0.8 -4.3 0.03" sizen="78.4 0.1" bgcolor="FFF9"/>',
+            '<quad posn="1.8 -1 0.04" sizen="3.2 3.2" style="Icons128x128_1" substyle="Rankings"/>',
+            f'<label posn="5.5 -1.9 0.04" sizen="74 0" textsize="2" scale="0.9" textcolor="FFFF" text="{_sanitize_ml_text(title)}"/>',
+            '<frame posn="77.4 1.3 0.05">',
+            '<quad posn="0 0 0.01" sizen="4 4" style="Icons64x64_1" substyle="ArrowDown"/>',
+            '<quad posn="1.1 -1.35 0.02" sizen="1.8 1.75" bgcolor="EEEF"/>',
+            f'<quad posn="0.65 -0.7 0.03" sizen="2.6 2.6" action="{ACT_CLOSE}" style="Icons64x64_1" substyle="Close"/>',
+            '</frame>',
+            buttons,
+        ]
+
+    def _window_footer() -> str:
+        return (
+            f'{_window_provider_footer(aseco)}'
+            '</frame>'
+            '</manialink>'
+        )
+
+    buttons = (
+        '<frame posn="67.05 -53.2 0.04">'
+        f'<quad posn="1.65 0 0.12" sizen="3.2 3.2" action="{ACT_OPEN_WHO}" style="Icons64x64_1" substyle="Refresh"/>'
+        f'<quad posn="4.95 0 0.12" sizen="3.2 3.2" action="{ACT_OPEN_DETAIL}" style="Icons64x64_1" substyle="ArrowPrev"/>'
+        '<quad posn="8.25 0 0.12" sizen="3.2 3.2" style="Icons64x64_1" substyle="StarGold"/>'
+        '<quad posn="8.25 0 0.13" sizen="3.2 3.2" style="Icons64x64_1" substyle="StarGold"/>'
+        '</frame>'
+    )
+    heading = 'MXKarma' if getattr(aseco, 'is_maniaplanet', False) else 'ManiaKarma'
+    xml = _window_start(f'{heading} who voted what', buttons)
+    xml.extend([
+        '<frame posn="2.6 -6.5 0.05">',
+        '<format textsize="1" textcolor="FFFF"/>',
+        '<quad posn="0 0.8 0.02" sizen="17.75 46.88" style="BgsPlayerCard" substyle="BgRacePlayerName"/>',
+        '<quad posn="19.05 0.8 0.02" sizen="17.75 46.88" style="BgsPlayerCard" substyle="BgRacePlayerName"/>',
+        '<quad posn="38.1 0.8 0.02" sizen="17.75 46.88" style="BgsPlayerCard" substyle="BgRacePlayerName"/>',
+        '<quad posn="57.15 0.8 0.02" sizen="17.75 46.88" style="BgsPlayerCard" substyle="BgRacePlayerName"/>',
+    ])
+
+    players: list[dict[str, Any]] = []
+    for player in _players_all(aseco):
+        plogin = getattr(player, 'login', '') or ''
+        side = 'local' if _cfg.is_mp else 'global'
+        gvote = int(_karma[side]['players'].get(plogin, {}).get('vote', 0) or 0)
+        players.append({
+            'id': int(getattr(player, 'id', 0) or 0),
+            'nickname': _sanitize_ml_text(getattr(player, 'nickname', plogin) or plogin),
+            'vote': -4 if gvote == 0 else gvote,
+        })
+
+    players.sort(key=lambda row: (-row['vote'], row['id']))
+    vote_index = {3: '+++', 2: '++', 1: '+', -1: '-', -2: '--', -3: '---', -4: 'none'}
+
+    rank = 1
+    line = 0
+    offset = 0.0
+    for player in players:
+        quad_y = (-(1.83 * line - 0.2)) if ((1.83 * line - 0.2) > 0) else 0.2
+        label_y = -(1.83 * line)
+        xml.append(f'<quad posn="{offset + 0.4} {quad_y} 0.03" sizen="16.95 1.83" style="BgsPlayerCard" substyle="BgCardSystem"/>')
+        xml.append(f'<label posn="{1 + offset} {label_y} 0.04" sizen="14 1.7" scale="0.9" text="{player["nickname"]}"/>')
+        xml.append(f'<label posn="{16.6 + offset} {label_y} 0.04" sizen="3 1.7" halign="right" scale="0.9" textcolor="FFFF" text="{vote_index[player["vote"]]}"/>')
+        line += 1
+        rank += 1
+        if line >= 25:
+            offset += 19.05
+            line = 0
+        if rank >= 101:
+            break
+
+    xml.append('</frame>')
+    xml.append(_window_footer())
+    _window_state[login] = ("who", page)
+    await _send_window(aseco, login, ''.join(xml))
+
+
+async def _show_reminder_window(aseco: Aseco, players: str | list[str]) -> None:
+    if isinstance(players, str):
+        player_logins = [p for p in players.split(',') if p]
+    else:
+        player_logins = list(players)
+    if not player_logins:
+        return
+    payload = _build_reminder_xml(aseco, at_score=_cfg.current_state == 7)
+    await deliver_ui(aseco, 'SendDisplayManialinkPageToLogin', ','.join(player_logins), payload, 0, False)
+    for login in player_logins:
+        p = _get_player(aseco, login)
+        if p is not None:
+            _ensure_player_state(p)
+            p.data['ManiaKarma']['ReminderWindow'] = True
+
+
+def _mx_map_badge(aseco: Aseco) -> str:
+    url = _sanitize_ml_text(_tmx_page_url(aseco))
+    if not url:
+        return ''
+    return (
+        '<quad posn="41.25 0.08 0" sizen="7 4" bgcolor="263545F0"/>'
+        '<quad posn="41.5 -0.4 0.01" sizen="3 3" style="Icons128x128_1" substyle="Challenge"/>'
+        '<label posn="45.9 -1.0 0.02" sizen="3 2" halign="center" textsize="1" textcolor="FFFF" text="MX"/>'
+        f'<quad posn="41.25 0.08 0.03" sizen="7 4" bgcolor="FFFFFF01" bgcolorfocus="FFFFFF16" url="{url}"/>'
+    )
+
+
+def _build_reminder_xml(aseco: Aseco, *, at_score: bool) -> str:
+    mp = getattr(aseco, 'is_maniaplanet', False)
+    rcfg = _cfg.reminder_score if at_score else _cfg.reminder_race
+    background = _score_bg_attrs() if at_score else _bg_attrs('BgsPlayerCard', 'BgRacePlayerName')
+    labels = {
+        "fantastic": _cfg.msg_fantastic.capitalize(),
+        "beautiful": _cfg.msg_beautiful.capitalize(),
+        "good": _cfg.msg_good.capitalize(),
+        "undecided": _cfg.msg_undecided.capitalize(),
+        "bad": _cfg.msg_bad.capitalize(),
+        "poor": _cfg.msg_poor.capitalize(),
+        "waste": _cfg.msg_waste.capitalize(),
+    }
+    title = _sanitize_ml_text(_cfg.msg_reminder_at_score) if mp else _cfg.msg_reminder_at_score
+    heading = ('posn="0.9 0.35 1" sizen="17.7 2" textsize="1"' if mp else
+               'posn="16.5 0.3 1" sizen="18 1.8" textsize="2" scale="0.8" halign="right"')
+    credit = ('posn="0.9 -1.55 1" sizen="17.7 1.5" textsize="1" scale="0.75"' if mp else
+              'posn="16.5 -1.5 1" sizen="14 0.2" textsize="1" scale="0.8" halign="right"')
+    xml = [
+        '<?xml version="1.0" encoding="UTF-8"?><manialinks>',
+        f'<manialink id="{ML_REMINDER}">',
+        f'<frame posn="{rcfg.pos_x} {rcfg.pos_y} 2">',
+        f'<quad posn="0 1 0" sizen="81.8 4.5" {background}/>',
+        f'<label {heading} textcolor="FFFF" text="{title}"/>',
+        f'<label {credit} textcolor="FFFF" text="{_reminder_attribution(aseco)}"/>',
+        '<frame posn="19.2 0.45 1">',
+        '</frame>',
+        '<frame posn="33 0.5 1">' if mp else '<frame posn="33 0.3 1">',
+    ]
+    for pos_x, action, color, label_key, vote_text in REMINDER_BUTTONS:
+        command_text = vote_text if vote_text == "???" else f'/{vote_text}'
+        command_scale = '0.7' if vote_text == "???" else '0.85'
+        command_y = '-2.0' if vote_text == "???" else '-1.75'
+        if mp:
+            color = '$9E6' if vote_text.startswith('+') else '$F98' if vote_text.startswith('-') else '$DDD'
+        action_attrs = '' if mp else f' action="{action}"'
+        text_depth = '0.01' if mp else '0'
+        button_skin = 'bgcolor="263545F0" bgcolorfocus="435972FF"' if mp else 'style="Bgs1InRace" substyle="BgIconBorder"'
+        button_height = '3.55' if mp else '3.75'
+        xml.insert(
+            -2,
+            f'<frame posn="{pos_x} 0"{action_attrs}>'
+            f'<quad posn="0 0.15 0" sizen="6.4 {button_height}" action="{action}" {button_skin}/>'
+            f'<label posn="3.2 -0.5 {text_depth}" sizen="6.2 0" halign="center" textsize="1"{action_attrs} text="{color}{labels[label_key]}"/>'
+            f'<label posn="3.2 {command_y} {text_depth}" sizen="10 0" halign="center" textsize="1" scale="{command_scale}"{action_attrs} text="{color}{command_text}"/>'
+            f'</frame>'
+        )
+    if getattr(aseco, 'is_maniaplanet', False):
+        xml.append(_mx_map_badge(aseco))
+    elif _cfg.img_tmx_logo_normal and (url := _tmx_page_url(aseco)):
+        xml.append(f'<quad posn="41.25 0.08 0" sizen="7 4" image="{_cfg.img_tmx_logo_normal}" imagefocus="{_cfg.img_tmx_logo_focus}" url="{url}"/>')
+    xml.extend(['</frame>', '</frame>', '</manialink>', '</manialinks>'])
+    return ''.join(xml)
+
+
+async def _show_mx_window(aseco: Aseco, player: Any) -> None:
+    if _cfg.current_state != 7:
+        return
+    payload = _build_mx_window_xml(aseco, _effective_vote(player.login), _current_map.get("name", ""))
+    await deliver_ui(aseco, 'SendDisplayManialinkPageToLogin', player.login, payload, 0, False)
+    _ensure_player_state(player)
+    player.data['ManiaKarma']['ReminderWindow'] = True
+
+
+def _build_mx_window_xml(aseco: Aseco, vote: int, map_name: str) -> str:
+    map_name = _sanitize_ml_text(clean_tm_text(str(map_name), keep_colors=False).replace("$", ""))
+    voted = {
+        3: '$390' + _cfg.msg_fantastic.capitalize(), 2: '$390' + _cfg.msg_beautiful.capitalize(), 1: '$390' + _cfg.msg_good.capitalize(),
+        -1: '$D02' + _cfg.msg_bad.capitalize(), -2: '$D02' + _cfg.msg_poor.capitalize(), -3: '$D02' + _cfg.msg_waste.capitalize(),
+    }.get(vote, '$888' + _cfg.msg_undecided.capitalize())
+    cmd = {3: '$390+++', 2: '$390++', 1: '$390+', -1: '$D02-', -2: '$D02--', -3: '$D02---'}.get(vote, '$888-/+')
+    rcfg = _cfg.reminder_score
+    button_skin = ('bgcolor="263545F0"' if getattr(aseco, 'is_maniaplanet', False)
+                   else 'style="Bgs1InRace" substyle="BgIconBorder"')
+    xml = [
+        '<?xml version="1.0" encoding="UTF-8"?><manialinks>',
+        f'<manialink id="{ML_REMINDER}"><frame posn="{rcfg.pos_x} {rcfg.pos_y} 2">',
+        f'<quad posn="0 1 0" sizen="81.8 4.5" {_score_bg_attrs()}/>',
+        f'<label posn="16.5 0.3 1" sizen="18 1.8" textsize="2" scale="0.8" halign="right" textcolor="FFFF" text="{_cfg.msg_reminder_at_score}"/>',
+        f'<label posn="16.5 -1.5 1" sizen="14 0.2" textsize="1" scale="0.8" halign="right" textcolor="FFFF" text="{_reminder_attribution(aseco)}"/>',
+        '<frame posn="19.2 0.45 1">',
+        f'<quad posn="0 0.15 0" sizen="7.5 3.75" {button_skin}/>',
+        f'<label posn="3.75 -0.5 0" sizen="7 0" textsize="1" halign="center" text="{voted}"/>',
+        f'<label posn="3.75 -1.8 0" sizen="10 0" textsize="1" halign="center" text="{cmd}"/>',
+        '</frame>',
+        '<frame posn="33 0.2 1">',
+        f'<label posn="40.5 -1.3 0" sizen="50 0" halign="right" textsize="1" textcolor="FFFF" text="Visit &#187; {map_name} &#171; at"/>',
+    ]
+    if getattr(aseco, 'is_maniaplanet', False):
+        xml.append(_mx_map_badge(aseco))
+    elif _cfg.img_tmx_logo_normal and (url := _tmx_page_url(aseco)):
+        xml.append(f'<quad posn="41.25 0.08 0" sizen="7 4" image="{_cfg.img_tmx_logo_normal}" imagefocus="{_cfg.img_tmx_logo_focus}" url="{url}"/>')
+    xml.extend(['</frame></frame></manialink></manialinks>'])
+    return ''.join(xml)
+
+
+async def _close_reminder_window(aseco: Aseco, player: Any | None = None) -> None:
+    if not _players_all(aseco):
+        return
+    xml = f'<?xml version="1.0" encoding="UTF-8"?><manialinks><manialink id="{ML_REMINDER}"></manialink></manialinks>'
+    if player is not None:
+        _ensure_player_state(player)
+        if player.data['ManiaKarma'].get('ReminderWindow'):
+            await deliver_ui(aseco, 'SendDisplayManialinkPageToLogin', player.login, xml, 0, False)
+            player.data['ManiaKarma']['ReminderWindow'] = False
+    else:
+        for p in _players_all(aseco):
+            _ensure_player_state(p)
+            p.data['ManiaKarma']['ReminderWindow'] = False
+        await deliver_ui(aseco, 'SendDisplayManialinkPage', xml, 0, False)
+
+
+# ---------------------------------------------------------------------------
+# messaging helpers
+# ---------------------------------------------------------------------------
+
+def _create_karma_message(login: str, force_display: bool = False, include_vote_status: bool = True) -> str | bool:
+    message = ""
+    if _cfg.show_karma or force_display:
+        side = 'global' if not _cfg.is_mp or _karma['global']['votes']['total'] else 'local'
+        message = _cfg.msg_karma_message.replace('{1}', strip_colors(str(_current_map.get('name', '')))).replace('{2}', str(_karma[side]['votes']['karma']))
+    if include_vote_status and (_cfg.show_votes or force_display):
+        vote = _effective_vote(login)
+        logger.debug(
+            "[ManiaKarma] create message login=%s pending=%s global=%s local=%s effective=%s",
+            login,
+            int(_karma.get("new", {}).get("players", {}).get(login, 0) or 0),
+            int(_karma['global']['players'].get(login, {}).get('vote', 0) or 0),
+            int(_karma['local']['players'].get(login, {}).get('vote', 0) or 0),
+            vote,
+        )
+        if vote != 0:
+            cmd = {3: '/+++', 2: '/++', 1: '/+', -1: '/-', -2: '/--', -3: '/---'}[vote]
+            message += _cfg.msg_karma_your_vote.replace('{1}', _vote_label(vote)).replace('{2}', cmd)
+        else:
+            message += _cfg.msg_karma_not_voted
+    if _cfg.show_details or force_display:
+        gv = _karma['local' if _cfg.is_mp else 'global']['votes']
+        message += '\n' + _fmt_template(
+            _cfg.msg_karma_details,
+            gv['karma'],
+            gv['fantastic']['percent'], gv['fantastic']['count'],
+            gv['beautiful']['percent'], gv['beautiful']['count'],
+            gv['good']['percent'], gv['good']['count'],
+            gv['bad']['percent'], gv['bad']['count'],
+            gv['poor']['percent'], gv['poor']['count'],
+            gv['waste']['percent'], gv['waste']['count'],
+        )
+    return message or False
+
+
+async def _send_map_karma_message(aseco: Aseco, login: str | None) -> None:
+    message = _create_karma_message(login or '', False, include_vote_status=bool(login))
+    if not message:
+        return
+    if login:
+        if _cfg.messages_in_window and _cfg.current_state != 7:
+            player = _get_player(aseco, login)
+            if player is not None:
+                await aseco.client.query_ignore_result('ChatSendServerMessageToLogin', _fmt_message(aseco, message), login)
+        else:
+            await aseco.client.query_ignore_result('ChatSendServerMessageToLogin', _fmt_message(aseco, message), login)
+    else:
+        await aseco.client.query_ignore_result('ChatSendServerMessage', _fmt_message(aseco, message))
+
+
+# ---------------------------------------------------------------------------
+# vote handler
+# ---------------------------------------------------------------------------
+
+async def _handle_player_vote(aseco: Aseco, player: Any, vote: int) -> None:
+    if not _cfg.enabled:
+        return
+    if _startup_phase(aseco):
+        return
+    _ensure_player_state(player)
+    await _close_reminder_window(aseco, player)
+
+    if _cfg.require_finish > 0 and int(player.data['ManiaKarma'].get('FinishedMapCount', 0) or 0) < _cfg.require_finish:
+        msg = _cfg.msg_require_finish.replace('{1}', str(_cfg.require_finish)).replace('{2}', '' if _cfg.require_finish == 1 else 's')
+        await aseco.client.query_ignore_result('ChatSendServerMessageToLogin', _fmt_message(aseco, msg), player.login)
+        return
+    if vote == 0:
+        return
+
+    global_player = _karma['global']['players'].setdefault(player.login, {'vote': 0, 'previous': 0})
+    local_player = _karma['local']['players'].setdefault(player.login, {'vote': 0, 'previous': 0})
+    compare = local_player if _cfg.is_mp else global_player
+    if int(compare.get('vote', 0) or 0) == vote:
+        await aseco.client.query_ignore_result('ChatSendServerMessageToLogin', _fmt_message(aseco, _cfg.msg_karma_voted), player.login)
+        return
+
+    old_global = int(global_player.get('vote', 0) or 0)
+    old_local = int(local_player.get('vote', 0) or 0)
+    global_player['previous'] = old_global
+    local_player['previous'] = old_local
+
+    if _cfg.is_mp or old_global != vote:
+        _karma['new']['players'][player.login] = vote
+        _karma['lookup_revision'] = _karma.get('lookup_revision', 0) + 1
+    if _cfg.mx_karma_key:
+        _karma.setdefault('mx_voter_names', {})[player.login] = getattr(player, 'nickname', '') or player.login
+
+    for side, old_vote in (("global", old_global), ("local", old_local)):
+        if side == 'global' and _cfg.is_mp:
+            continue
+        old_key = VOTE_KEYS.get(old_vote)
+        if old_key:
+            _karma[side]['votes'][old_key]['count'] -= 1
+
+    if not _cfg.is_mp:
+        global_player['vote'] = vote
+        _karma['global']['votes'][VOTE_KEYS[vote]]['count'] += 1
+    else:
+        old_global = old_local  # Existing vote/change chat wording.
+    local_player['vote'] = vote
+    new_key = VOTE_KEYS[vote]
+    _karma['local']['votes'][new_key]['count'] += 1
+    _calculate_karma(['global', 'local'])
+
+    if _cfg.score_mx_window:
+        await _show_mx_window(aseco, player)
+
+    if old_global == 0:
+        await aseco.client.query_ignore_result('ChatSendServerMessageToLogin', _fmt_message(aseco, _cfg.msg_karma_done, strip_colors(str(_current_map.get('name', '')))), player.login)
+    elif old_global != vote:
+        await aseco.client.query_ignore_result('ChatSendServerMessageToLogin', _fmt_message(aseco, _cfg.msg_karma_change, strip_colors(str(_current_map.get('name', '')))), player.login)
+
+    msg = _create_karma_message(player.login, False)
+    if msg:
+        await aseco.client.query_ignore_result('ChatSendServerMessageToLogin', _fmt_message(aseco, msg), player.login)
+
+    await _send_widget_combination(aseco, ['player_marker'], player)
+
+    if _cfg.show_player_vote_public:
+        logins: list[str] = []
+        for pl in _players_all(aseco):
+            _ensure_player_state(pl)
+            if pl.login == player.login:
+                continue
+            if _cfg.require_finish > 0 and int(pl.data['ManiaKarma'].get('FinishedMapCount', 0) or 0) < _cfg.require_finish:
+                continue
+            if _effective_vote(pl.login) != 0:
+                continue
+            if _is_spectator(aseco, pl):
+                continue
+            logins.append(pl.login)
+        if logins:
+            pub = _cfg.msg_show_opinion.replace('{1}', strip_colors(getattr(player, 'nickname', player.login))).replace('{2}', _vote_label(vote))
+            await aseco.client.query_ignore_result('ChatSendServerMessageToLogin', _fmt_message(aseco, pub), ','.join(logins))
+
+    await aseco.release_event('onKarmaChange', {
+        'Karma': _karma['global']['votes']['karma'],
+        'Total': _karma['global']['votes']['total'],
+        'FantasticCount': _karma['global']['votes']['fantastic']['count'],
+        'FantasticPercent': _karma['global']['votes']['fantastic']['percent'],
+        'BeautifulCount': _karma['global']['votes']['beautiful']['count'],
+        'BeautifulPercent': _karma['global']['votes']['beautiful']['percent'],
+        'GoodCount': _karma['global']['votes']['good']['count'],
+        'GoodPercent': _karma['global']['votes']['good']['percent'],
+        'BadCount': _karma['global']['votes']['bad']['count'],
+        'BadPercent': _karma['global']['votes']['bad']['percent'],
+        'PoorCount': _karma['global']['votes']['poor']['count'],
+        'PoorPercent': _karma['global']['votes']['poor']['percent'],
+        'WasteCount': _karma['global']['votes']['waste']['count'],
+        'WastePercent': _karma['global']['votes']['waste']['percent'],
+    })
+
+
+# ---------------------------------------------------------------------------
+# lifecycle / events
+# ---------------------------------------------------------------------------
+
+async def _load_config(aseco: Aseco) -> None:
+    global _cfg, _api_connected, _api_authcode, _retrytime, _lookup_retrytime
+    global _api_provider, _api_website, _api_epoch, _auth_pending
+    previous = _cfg
+    _cfg = KarmaConfig()
+    _cfg.is_mp = bool(getattr(aseco, 'is_maniaplanet', False))
+    if _cfg.is_mp:
+        _cfg.mx_karma_key = _env('PYXASECOMP_MX_KARMA_KEY').strip()
+    bound = bind_app_settings(MANIA_KARMA_SETTINGS_SCHEMA, getattr(aseco, '_base_dir', None))
+    root = bound.values["config"] if isinstance(bound.values["config"], dict) else {}
+    urls = bound.values["config/urls"] if isinstance(bound.values["config/urls"], dict) else {}
+
+    _cfg.enabled = bool(bound.values["config/enabled"])
+    _cfg.api_auth_url = as_str(urls.get('api_auth'), _cfg.api_auth_url)
+    _cfg.website = as_str(urls.get('website'), _cfg.website)
+    _cfg.fallback_website = as_str(urls.get('fallback_website'), _cfg.fallback_website)
+    _cfg.fallback_api_auth_url = str(urls.get('fallback_api_auth', _cfg.fallback_api_auth_url) or '').strip()
+    _cfg.nation = as_str(_env('MK_NATION'), '').upper()
+    if (previous.api_auth_url, previous.website, previous.fallback_api_auth_url,
+            previous.fallback_website, previous.nation, previous.is_mp, previous.mx_karma_key) == (
+            _cfg.api_auth_url, _cfg.website, _cfg.fallback_api_auth_url,
+            _cfg.fallback_website, _cfg.nation, _cfg.is_mp, _cfg.mx_karma_key):
+        _cfg.api_url = previous.api_url
+        _cfg.import_done = previous.import_done
+    else:
+        _api_connected, _api_authcode = False, ''
+        _retrytime = _lookup_retrytime = 0
+        _api_provider, _api_website = 0, ''
+        _api_epoch += 1
+        _auth_pending = False
+
+    _cfg.connect_timeout = bound.values["config/connect_timeout"]
+    _cfg.wait_timeout = bound.values["config/wait_timeout"]
+    _cfg.keepalive_min_timeout = bound.values["config/keepalive_min_timeout"]
+    _cfg.show_welcome = bound.values["config/show_welcome"]
+    _cfg.show_at_start = bound.values["config/show_at_start"]
+    _cfg.show_karma = bound.values["config/show_karma"]
+    _cfg.show_votes = bound.values["config/show_votes"]
+    _cfg.show_details = bound.values["config/show_details"]
+    _cfg.allow_public_vote = bound.values["config/allow_public_vote"]
+    _cfg.messages_in_window = bound.values["config/messages_in_window"]
+    _cfg.show_player_vote_public = bound.values["config/show_player_vote_public"]
+    _cfg.save_karma_also_local = _cfg.is_mp or bound.values["config/save_karma_also_local"]
+    _cfg.sync_global_karma_local = not _cfg.is_mp and bound.values["config/sync_global_karma_local"]
+    _cfg.score_mx_window = bound.values["config/score_mx_window"]
+    _cfg.import_done = as_bool(root.get('import_done'), _cfg.import_done)
+    _cfg.require_finish = bound.values["config/require_finish"]
+    _cfg.remind_to_vote = str(bound.values["config/remind_to_vote"] or _cfg.remind_to_vote).upper()
+    _cfg.uptime_check = bound.values["config/uptodate_check"]
+    _cfg.uptodate_info = str(bound.values["config/uptodate_info"] or _cfg.uptodate_info).upper()
+    _cfg.karma_calculation_method = str(bound.values["config/karma_calculation_method"] or _cfg.karma_calculation_method).upper()
+    _cfg.number_format = str(bound.values["config/number_format"] or _cfg.number_format).lower()
+
+    images = bound.values["config/images"] if isinstance(bound.values["config/images"], dict) else {}
+    _cfg.img_open_left = as_str(images.get('widget_open_left'), _cfg.img_open_left)
+    _cfg.img_open_right = as_str(images.get('widget_open_right'), _cfg.img_open_right)
+    _cfg.img_tmx_logo_normal = as_str(images.get('tmx_logo_normal'), _cfg.img_tmx_logo_normal)
+    _cfg.img_tmx_logo_focus = as_str(images.get('tmx_logo_focus'), _cfg.img_tmx_logo_focus)
+    _cfg.img_cup_gold = as_str(images.get('cup_gold'), _cfg.img_cup_gold)
+    _cfg.img_cup_silver = as_str(images.get('cup_silver'), _cfg.img_cup_silver)
+    _cfg.img_maniakarma_logo = as_str(images.get('maniakarma_logo'), _cfg.img_maniakarma_logo)
+    _cfg.img_progress_indicator = as_str(images.get('progress_indicator'), _cfg.img_progress_indicator)
+
+    messages = bound.values["config/messages"] if isinstance(bound.values["config/messages"], dict) else {}
+    _cfg.msg_welcome = as_str(messages.get('welcome'), _cfg.msg_welcome)
+    _cfg.msg_uptodate_ok = as_str(messages.get('uptodate_ok'), _cfg.msg_uptodate_ok)
+    _cfg.msg_uptodate_new = as_str(messages.get('uptodate_new'), _cfg.msg_uptodate_new)
+    _cfg.msg_uptodate_failed = as_str(messages.get('uptodate_failed'), _cfg.msg_uptodate_failed)
+    _cfg.msg_karma_message = as_str(messages.get('karma_message'), _cfg.msg_karma_message)
+    _cfg.msg_karma_your_vote = as_str(messages.get('karma_your_vote'), _cfg.msg_karma_your_vote)
+    _cfg.msg_karma_not_voted = as_str(messages.get('karma_not_voted'), _cfg.msg_karma_not_voted)
+    _cfg.msg_karma_details = as_str(messages.get('karma_details'), _cfg.msg_karma_details)
+    _cfg.msg_karma_done = as_str(messages.get('karma_done'), _cfg.msg_karma_done)
+    _cfg.msg_karma_change = as_str(messages.get('karma_change'), _cfg.msg_karma_change)
+    _cfg.msg_karma_voted = as_str(messages.get('karma_voted'), _cfg.msg_karma_voted)
+    _cfg.msg_karma_remind = as_str(messages.get('karma_remind'), _cfg.msg_karma_remind)
+    _cfg.msg_require_finish = as_str(messages.get('karma_require_finish'), _cfg.msg_require_finish)
+    _cfg.msg_no_public = as_str(messages.get('karma_no_public'), _cfg.msg_no_public)
+    _cfg.msg_karma_list_help = as_str(messages.get('karma_list_help'), _cfg.msg_karma_list_help)
+    _cfg.msg_karma_help = as_str(messages.get('karma_help'), _cfg.msg_karma_help)
+    _cfg.msg_reminder_at_score = as_str(messages.get('karma_reminder_at_score'), _cfg.msg_reminder_at_score)
+    _cfg.msg_vote_singular = as_str(messages.get('karma_vote_singular'), _cfg.msg_vote_singular)
+    _cfg.msg_vote_plural = as_str(messages.get('karma_vote_plural'), _cfg.msg_vote_plural)
+    _cfg.msg_you_have_voted = as_str(messages.get('karma_you_have_voted'), _cfg.msg_you_have_voted)
+    _cfg.msg_fantastic = as_str(messages.get('karma_fantastic'), _cfg.msg_fantastic)
+    _cfg.msg_beautiful = as_str(messages.get('karma_beautiful'), _cfg.msg_beautiful)
+    _cfg.msg_good = as_str(messages.get('karma_good'), _cfg.msg_good)
+    _cfg.msg_undecided = as_str(messages.get('karma_undecided'), _cfg.msg_undecided)
+    _cfg.msg_bad = as_str(messages.get('karma_bad'), _cfg.msg_bad)
+    _cfg.msg_poor = as_str(messages.get('karma_poor'), _cfg.msg_poor)
+    _cfg.msg_waste = as_str(messages.get('karma_waste'), _cfg.msg_waste)
+    _cfg.msg_show_opinion = as_str(messages.get('karma_show_opinion'), _cfg.msg_show_opinion)
+    _cfg.msg_show_undecided = as_str(messages.get('karma_show_undecided'), _cfg.msg_show_undecided)
+    logger.info('[ManiaKarma] Config loaded from %s', display_path(bound.source_path) if bound.source_path is not None else 'defaults')
+
+    _cfg.bg_pos_default = _x(root, 'widget_styles/vote_buttons/positive/bgcolor_default', _cfg.bg_pos_default)
+    _cfg.bg_pos_focus = _x(root, 'widget_styles/vote_buttons/positive/bgcolor_focus', _cfg.bg_pos_focus)
+    _cfg.text_pos_color = _x(root, 'widget_styles/vote_buttons/positive/text_color', _cfg.text_pos_color)
+    _cfg.bg_neg_default = _x(root, 'widget_styles/vote_buttons/negative/bgcolor_default', _cfg.bg_neg_default)
+    _cfg.bg_neg_focus = _x(root, 'widget_styles/vote_buttons/negative/bgcolor_focus', _cfg.bg_neg_focus)
+    _cfg.text_neg_color = _x(root, 'widget_styles/vote_buttons/negative/text_color', _cfg.text_neg_color)
+    _cfg.bg_vote = _x(root, 'widget_styles/vote_buttons/votes/bgcolor_vote', _cfg.bg_vote)
+    _cfg.bg_disabled = _x(root, 'widget_styles/vote_buttons/votes/bgcolor_disabled', _cfg.bg_disabled)
+
+    _cfg.race_title = _x(root, 'widget_styles/race/title', _cfg.race_title)
+    _cfg.race_icon_style = _x(root, 'widget_styles/race/icon_style', _cfg.race_icon_style)
+    _cfg.race_icon_substyle = _x(root, 'widget_styles/race/icon_substyle', _cfg.race_icon_substyle)
+    _cfg.race_bg_style = _x(root, 'widget_styles/race/background_style', _cfg.race_bg_style)
+    _cfg.race_bg_substyle = _x(root, 'widget_styles/race/background_substyle', _cfg.race_bg_substyle)
+    _cfg.race_title_style = _x(root, 'widget_styles/race/title_style', _cfg.race_title_style)
+    _cfg.race_title_substyle = _x(root, 'widget_styles/race/title_substyle', _cfg.race_title_substyle)
+
+    _cfg.score_title = _x(root, 'widget_styles/score/title', _cfg.score_title)
+    _cfg.score_icon_style = _x(root, 'widget_styles/score/icon_style', _cfg.score_icon_style)
+    _cfg.score_icon_substyle = _x(root, 'widget_styles/score/icon_substyle', _cfg.score_icon_substyle)
+    _cfg.score_bg_style = _x(root, 'widget_styles/score/background_style', _cfg.score_bg_style)
+    _cfg.score_bg_substyle = _x(root, 'widget_styles/score/background_substyle', _cfg.score_bg_substyle)
+    _cfg.score_title_style = _x(root, 'widget_styles/score/title_style', _cfg.score_title_style)
+    _cfg.score_title_substyle = _x(root, 'widget_styles/score/title_substyle', _cfg.score_title_substyle)
+
+    _cfg.reminder_race = ReminderStateCfg(_xf(root, 'reminder_window/race/pos_x', _cfg.reminder_race.pos_x), _xf(root, 'reminder_window/race/pos_y', _cfg.reminder_race.pos_y))
+    _cfg.reminder_score = ReminderStateCfg(_xf(root, 'reminder_window/score/pos_x', _cfg.reminder_score.pos_x), _xf(root, 'reminder_window/score/pos_y', _cfg.reminder_score.pos_y))
+
+    _cfg.gamemodes = {}
+    for mode, tag in GM_TAG.items():
+        enabled_path = f'karma_widget/gamemode/{tag}/enabled'
+        pos_x_path = f'karma_widget/gamemode/{tag}/pos_x'
+        pos_y_path = f'karma_widget/gamemode/{tag}/pos_y'
+        if any(_path_value(root, p, None) is not None for p in (enabled_path, pos_x_path, pos_y_path)):
+            _cfg.gamemodes[mode] = WidgetGamemodeCfg(
+                enabled=_xb(root, enabled_path, True),
+                pos_x=_xf(root, pos_x_path, 49.2),
+                pos_y=_xf(root, pos_y_path, 32.86 if mode != 4 else 17.5),
+            )
+    defaults = {0: (49.2, 32.86), 1: (49.2, 32.86), 2: (49.2, 32.86), 3: (49.2, 27.36), 4: (49.2, 17.5), 5: (49.2, 32.86), 7: (49.2, 32.86)}
+    for mode, (x, y) in defaults.items():
+        _cfg.gamemodes.setdefault(mode, WidgetGamemodeCfg(True, x, y))
+    if _cfg.is_mp:
+        from pyxaseco.maniaplanet_ui import provider_label
+        for name, value in vars(_cfg).items():
+            if name.startswith('msg_') or name in ('race_title', 'score_title'):
+                setattr(_cfg, name, provider_label(value))
+
+
+async def _mk_onSync(aseco: Aseco, _data=None) -> None:
+    global _karma, _current_map, _runtime_aseco
+    _runtime_aseco = aseco
+    await _load_config(aseco)
+    if not _cfg.enabled:
+        return
+    mp = getattr(aseco, 'is_maniaplanet', False)
+    if not mp:
+        _karma_delivery(aseco)
+    if not mp and not _providers():
+        logger.warning('[ManiaKarma] Disabled: urls.api_auth missing in app_defaults.toml')
+        return
+    if not mp and (not _cfg.nation or _cfg.nation == 'YOUR_SERVER_NATION' or _cfg.nation not in ISO3166_ALPHA3):
+        logger.warning('[ManiaKarma] Disabled: nation must be set to a valid ISO-3166 alpha-3 code via MK_NATION')
+        return
+    _cfg.current_state = _display_mode(aseco)
+    _current_map = await _get_current_map_info(aseco)
+    if not _karma or _startup_phase(aseco):
+        _karma = _set_empty_karma(True)
+        _karma['data'].update({
+            'uid': _current_map.get('uid', ''),
+            'id': _current_map.get('id', False),
+            'name': _current_map.get('name', ''),
+            'author': _current_map.get('author', ''),
+            'env': _current_map.get('environment', ''),
+            'tmx': (_current_map.get('mx') or {}).get('id', ''),
+        })
+    await _api_auth(aseco)
+    await _load_local_karma()
+    await _fetch_global_votes(aseco)
+    _calculate_karma(['global', 'local'])
+
+    if _api_connected:
+        if _cfg.current_state == 7:
+            await _send_widget_combination(aseco, ['skeleton_score', 'cups_values'], None)
+        else:
+            await _send_widget_combination(aseco, ['skeleton_race', 'cups_values'], None)
+        for p in _players_all(aseco):
+            await _send_widget_combination(aseco, ['player_marker'], p)
+        await _send_connection_status(aseco, True, _cfg.current_state)
+
+
+async def _mk_onEverySecond(aseco: Aseco, _data=None) -> None:
+    global _lookup_retrytime
+    if not _cfg.enabled:
+        return
+    if _retrytime > 0:
+        now = int(asyncio.get_running_loop().time())
+        if now >= _retrytime:
+            await _api_auth(aseco)
+            if _api_connected:
+                await _send_connection_status(aseco, True, _cfg.current_state)
+    elif _api_connected and _lookup_retrytime > 0:
+        if int(asyncio.get_running_loop().time()) >= _lookup_retrytime:
+            _lookup_retrytime = 0
+            await _fetch_global_votes(aseco)
+
+
+async def _mk_onShutdown(aseco: Aseco, _data=None) -> None:
+    await _store_karma_votes(aseco)
+
+
+async def _mk_onChat(aseco: Aseco, chat: list) -> None:
+    if not _cfg.enabled:
+        return
+    if len(chat) < 3 or chat[0] == getattr(aseco.server, 'id', None):
+        return
+    if len(chat) > 3 and bool(chat[3]):
+        return
+    text = str(chat[2]).strip()
+    if text not in ('+++', '++', '+', '-', '--', '---'):
+        return
+    player = _get_player(aseco, str(chat[1]))
+    if player is None:
+        return
+    if _cfg.allow_public_vote:
+        await _handle_player_vote(aseco, player, {'+++': 3, '++': 2, '+': 1, '-': -1, '--': -2, '---': -3}[text])
+    else:
+        msg = _cfg.msg_no_public.replace('{1}', '/' + text)
+        await aseco.client.query_ignore_result('ChatSendServerMessageToLogin', _fmt_message(aseco, msg), player.login)
+
+
+async def chat_karma(aseco: Aseco, command: dict) -> None:
+    if not _cfg.enabled:
+        return
+    author = command['author']
+    login = author.login
+    params = str(command.get('params') or '').strip().upper()
+    if params in ('HELP', 'ABOUT'):
+        await _show_help_window(aseco, author, _cfg.msg_karma_help)
+        return
+    if params == 'DETAILS':
+        msg = _fmt_template(
+            _cfg.msg_karma_details,
+            _karma['global']['votes']['karma'],
+            _karma['global']['votes']['fantastic']['percent'], _karma['global']['votes']['fantastic']['count'],
+            _karma['global']['votes']['beautiful']['percent'], _karma['global']['votes']['beautiful']['count'],
+            _karma['global']['votes']['good']['percent'], _karma['global']['votes']['good']['count'],
+            _karma['global']['votes']['bad']['percent'], _karma['global']['votes']['bad']['count'],
+            _karma['global']['votes']['poor']['percent'], _karma['global']['votes']['poor']['count'],
+            _karma['global']['votes']['waste']['percent'], _karma['global']['votes']['waste']['count'],
+        )
+        await aseco.client.query_ignore_result('ChatSendServerMessageToLogin', _fmt_message(aseco, msg), login)
+        return
+    if params == 'RELOAD' and _is_master_admin(aseco, author):
+        aseco.console('[plugin.mania_karma.py] MasterAdmin %s reloads the configuration.', login)
+        await _mk_onSync(aseco)
+        await aseco.client.query_ignore_result('ChatSendServerMessageToLogin', _fmt_message(aseco, '{#admin}Reloading the configuration from "app_defaults.toml" now.'), login)
+        return
+    if params == 'EXPORT' and _is_master_admin(aseco, author):
+        await _api_export_votes(aseco, author)
+        return
+    if params == 'UPTODATE' and _is_master_admin(aseco, author):
+        await aseco.client.query_ignore_result('ChatSendServerMessageToLogin', _fmt_message(aseco, '{#server}> {#karma}Up-to-date check is not implemented for this PyXaseco port.'), login)
+        return
+    if params == '' or params == 'LOTTERY':
+        msg = _create_karma_message(login, True)
+        if msg:
+            await aseco.client.query_ignore_result('ChatSendServerMessageToLogin', _fmt_message(aseco, msg), login)
+        return
+
+
+async def chat_plusplusplus(aseco: Aseco, command: dict):
+    await _handle_player_vote(aseco, command['author'], 3)
+
+
+async def chat_plusplus(aseco: Aseco, command: dict):
+    await _handle_player_vote(aseco, command['author'], 2)
+
+
+async def chat_plus(aseco: Aseco, command: dict):
+    await _handle_player_vote(aseco, command['author'], 1)
+
+
+async def chat_dash(aseco: Aseco, command: dict):
+    await _handle_player_vote(aseco, command['author'], -1)
+
+
+async def chat_dashdash(aseco: Aseco, command: dict):
+    await _handle_player_vote(aseco, command['author'], -2)
+
+
+async def chat_dashdashdash(aseco: Aseco, command: dict):
+    await _handle_player_vote(aseco, command['author'], -3)
+
+
+async def _mk_onKarmaChange(aseco: Aseco, _unused=None) -> None:
+    await _send_widget_combination(aseco, ['cups_values'], None)
+
+
+async def _mk_onPlayerConnect(aseco: Aseco, player: Any) -> None:
+    if not _cfg.enabled:
+        return
+    global _current_map
+    _ensure_player_state(player)
+    if _cfg.show_welcome and _cfg.msg_welcome and (not _cfg.is_mp or _cfg.mx_karma_key):
+        website = MX_KARMA_SITE if _cfg.is_mp else f'http://{_active_website()}/'
+        provider = 'MXKarma' if _cfg.is_mp else _active_website()
+        msg = _cfg.msg_welcome.replace('{1}', website).replace('{2}', provider)
+        await aseco.client.query_ignore_result('ChatSendServerMessageToLogin', _fmt_message(aseco, msg), player.login)
+    if not _cfg.is_mp and _is_master_admin(aseco, player) and not _cfg.import_done:
+        warn = '{#server}> {#emotic}#################################################\n{#server}> {#emotic}Please start the export of your current local votes with the command "/karma export". Thanks!\n{#server}> {#emotic}#################################################'
+        await aseco.client.query_ignore_result('ChatSendServerMessageToLogin', _fmt_message(aseco, warn), player.login)
+
+    if not _current_map:
+        _current_map = await _get_current_map_info(aseco)
+    if _cfg.require_finish > 0:
+        await _seed_finish_counts(aseco, [player])
+
+    if not _startup_phase(aseco):
+        _karma['global']['players'].setdefault(player.login, {'vote': 0, 'previous': 0})
+        if player.login not in _karma['local']['players']:
+            local_one = await _get_local_votes(_current_map.get('id'), player.login)
+            if local_one:
+                _karma['local']['players'].update(local_one)
+                _rebuild_counts_from_players('local')
+        await _fetch_global_votes(aseco, player.login)
+        if _cfg.sync_global_karma_local:
+            await _sync_global_and_local('global', False)
+        if _cfg.current_state == 7:
+            await _send_widget_combination(aseco, ['skeleton_score', 'cups_values', 'player_marker'], player)
+        else:
+            await _send_widget_combination(aseco, ['skeleton_race', 'cups_values', 'player_marker'], player)
+
+
+async def _mk_onPlayerDisconnect(aseco: Aseco, player: Any) -> None:
+
+    _ensure_player_state(player)
+
+
+async def _mk_onPlayerFinish(aseco: Aseco, finish_item: Any) -> None:
+    if not _cfg.enabled:
+        return
+    player = getattr(finish_item, 'player', None)
+    if player is None:
+        return
+    _ensure_player_state(player)
+    if _cfg.require_finish > 0:
+        player.data['ManiaKarma']['FinishedMapCount'] = int(player.data['ManiaKarma'].get('FinishedMapCount', 0) or 0) + 1
+        await _send_widget_combination(aseco, ['player_marker'], player)
+
+    if _cfg.remind_to_vote in ('FINISHED', 'ALWAYS'):
+        voted = _effective_vote(player.login)
+        if voted == 0 and (_cfg.require_finish <= 0 or int(player.data['ManiaKarma']['FinishedMapCount']) >= _cfg.require_finish):
+            if _cfg.reminder_window_display in ('FINISHED', 'ALWAYS'):
+                await _show_reminder_window(aseco, [player.login])
+                player.data['ManiaKarma']['ReminderWindow'] = True
+            else:
+                await aseco.client.query_ignore_result('ChatSendServerMessageToLogin', _fmt_message(aseco, _cfg.msg_karma_remind), player.login)
+
+
+async def _mk_onPlayerManialinkPageAnswer(aseco: Aseco, answer: list) -> None:
+    if not _cfg.enabled:
+        return
+    if len(answer) < 3 or int(answer[2] or 0) == 0:
+        return
+    player = _get_player(aseco, str(answer[1]))
+    if player is None:
+        return
+    action = int(answer[2])
+    if action == ACT_CLOSE:
+        await _send_window(aseco, player.login, f'<manialink id="{ML_WINDOWS}"></manialink>')
+        _window_state.pop(player.login, None)
+    elif action == ACT_OPEN_HELP:
+        await _show_help_window(aseco, player, _cfg.msg_karma_help)
+    elif action == ACT_OPEN_DETAIL:
+        await _show_details_window(aseco, player.login)
+    elif action == ACT_OPEN_WHO:
+        await _show_who_window(aseco, player.login, 0)
+    elif action == ACT_VOTE_P3:
+        await _handle_player_vote(aseco, player, 3)
+    elif action == ACT_VOTE_P2:
+        await _handle_player_vote(aseco, player, 2)
+    elif action == ACT_VOTE_P1:
+        await _handle_player_vote(aseco, player, 1)
+    elif action == ACT_VOTE_UNDECIDED:
+        await aseco.client.query_ignore_result('ChatSendServerMessageToLogin', _fmt_message(aseco, _cfg.msg_show_undecided.replace('{1}', strip_colors(getattr(player, 'nickname', player.login)))), player.login)
+    elif action == ACT_VOTE_N1:
+        await _handle_player_vote(aseco, player, -1)
+    elif action == ACT_VOTE_N2:
+        await _handle_player_vote(aseco, player, -2)
+    elif action == ACT_VOTE_N3:
+        await _handle_player_vote(aseco, player, -3)
+    elif action == ACT_VOTE_LOCKED:
+        await _handle_player_vote(aseco, player, 0)
+    elif action == ACT_REFRESH:
+        await _fetch_global_votes(aseco)
+        state = _window_state.get(player.login, ('details', 0))
+        if state[0] == 'who':
+            await _show_who_window(aseco, player.login, state[1])
+        elif state[0] == 'help':
+            await _show_help_window(aseco, player, _cfg.msg_karma_help)
+        else:
+            await _show_details_window(aseco, player.login)
+    elif action == ACT_PAGE_PREV:
+        kind, page = _window_state.get(player.login, ('who', 0))
+        await _show_who_window(aseco, player.login, page - 1)
+    elif action == ACT_PAGE_NEXT:
+        kind, page = _window_state.get(player.login, ('who', 0))
+        await _show_who_window(aseco, player.login, page + 1)
+
+
+async def _mk_onNewChallenge(aseco: Aseco, map_obj: Any) -> None:
+    _cfg.current_state = _display_mode(aseco)
+    await _close_reminder_window(aseco, None)
+    await _send_widget_combination(aseco, ['hide_all'], None)
+    await _store_karma_votes(aseco)
+    if _cfg.require_finish > 0:
+        for p in _players_all(aseco):
+            _ensure_player_state(p)
+            p.data['ManiaKarma']['FinishedMapCount'] = 0
+
+
+async def _mk_onNewChallenge2(aseco: Aseco, map_obj: Any) -> None:
+    if not _cfg.enabled:
+        return
+    global _current_map, _karma
+    _current_map = await _get_current_map_info(aseco)
+    _karma = _set_empty_karma(True)
+    _karma['data'].update({
+        'uid': getattr(map_obj, 'uid', _current_map.get('uid', '')) or _current_map.get('uid', ''),
+        'id': getattr(map_obj, 'id', _current_map.get('id', False)) or _current_map.get('id', False),
+        'name': getattr(map_obj, 'name', _current_map.get('name', '')) or _current_map.get('name', ''),
+        'author': getattr(map_obj, 'author', _current_map.get('author', '')) or _current_map.get('author', ''),
+        'env': getattr(map_obj, 'environment', _current_map.get('environment', '')) or _current_map.get('environment', ''),
+        'tmx': getattr(getattr(map_obj, 'mx', None), 'id', '') or (_current_map.get('mx') or {}).get('id', ''),
+    })
+    if not _players_all(aseco):
+        await _load_local_karma()
+        return
+    await _load_local_karma()
+    if _cfg.require_finish > 0:
+        await _seed_finish_counts(aseco)
+    await _fetch_global_votes(aseco)
+    if _cfg.sync_global_karma_local:
+        await _sync_global_and_local('global', False)
+    _cfg.current_state = _display_mode(aseco)
+    await _send_loading_indicator(aseco, True, _cfg.current_state)
+    await _send_widget_combination(aseco, ['skeleton_race', 'cups_values'], None)
+    for p in _players_all(aseco):
+        await _send_widget_combination(aseco, ['player_marker'], p)
+    await _send_loading_indicator(aseco, False, _cfg.current_state)  # hide spinner once votes are loaded
+    if _retrytime > 0:
+        await _send_connection_status(aseco, False, _cfg.current_state)
+async def _mk_onRestartChallenge2(aseco: Aseco, _map: Any) -> None:
+    await _close_reminder_window(aseco, None)
+    _cfg.current_state = _display_mode(aseco)
+    await _send_widget_combination(aseco, ['skeleton_race', 'cups_values'], None)
+    for p in _players_all(aseco):
+        await _send_widget_combination(aseco, ['player_marker'], p)
+
+
+async def _mk_onEndRace1(aseco: Aseco, _data: Any) -> None:
+    if not _players_all(aseco):
+        return
+    _cfg.current_state = 7
+    if _retrytime > 0:
+        await _send_connection_status(aseco, False, _cfg.current_state)
+    await _send_widget_combination(aseco, ['hide_window', 'skeleton_score', 'cups_values'], None)
+    for p in _players_all(aseco):
+        await _send_widget_combination(aseco, ['player_marker'], p)
+
+    if _cfg.remind_to_vote in ('SCORE', 'ALWAYS'):
+        remind: list[str] = []
+        for p in _players_all(aseco):
+            _ensure_player_state(p)
+            if _cfg.require_finish > 0 and int(p.data['ManiaKarma'].get('FinishedMapCount', 0) or 0) < _cfg.require_finish:
+                continue
+            if _effective_vote(p.login) == 0:
+                remind.append(p.login)
+                p.data['ManiaKarma']['ReminderWindow'] = True
+            elif _cfg.score_mx_window:
+                await _show_mx_window(aseco, p)
+        if remind:
+            if _cfg.reminder_window_display in ('SCORE', 'ALWAYS'):
+                await _show_reminder_window(aseco, remind)
+            else:
+                await aseco.client.query_ignore_result('ChatSendServerMessageToLogin', _fmt_message(aseco, _cfg.msg_karma_remind), ','.join(remind))
+    elif _cfg.score_mx_window:
+        for p in _players_all(aseco):
+            if _is_spectator(aseco, p):
+                continue
+            if _effective_vote(p.login) != 0:
+                await _show_mx_window(aseco, p)
+
+
+# ---------------------------------------------------------------------------
+# export helper
+# ---------------------------------------------------------------------------
+
+async def _export_votes_csv(aseco: Aseco) -> str:
+    rows = []
+    try:
+        rows = await _db_fetchall(
+            "SELECT c.Uid, c.Name, p.Login, p.NickName, k.Score FROM rs_karma k LEFT JOIN players p ON p.Id=k.PlayerId LEFT JOIN challenges c ON c.Id=k.ChallengeId ORDER BY c.Name ASC, p.Login ASC"
+        )
+    except Exception:
+        try:
+            rows = await _db_fetchall(
+                "SELECT k.uid, '', p.Login, p.NickName, k.vote FROM rs_karma k LEFT JOIN players p ON p.Id=k.PlayerId ORDER BY k.uid ASC, p.Login ASC"
+            )
+        except Exception:
+            rows = []
+    out = ['uid,map,login,nickname,vote']
+    for row in rows:
+        out.append(','.join('"' + str(x or '').replace('"', '""') + '"' for x in row))
+    return '\n'.join(out) + '\n'
+
+
+async def _build_export_payload(aseco: Aseco, identity: tuple[str, str, str]) -> tuple[str, int]:
+    rows = []
+    try:
+        rows = await _db_fetchall(
+            "SELECT c.Uid, c.Name, c.Author, c.Environment, p.Login, k.Score "
+            "FROM rs_karma k "
+            "LEFT JOIN challenges c ON c.Id=k.ChallengeId "
+            "LEFT JOIN players p ON p.Id=k.PlayerId "
+            "ORDER BY c.Uid ASC"
+        )
+    except Exception:
+        try:
+            rows = await _db_fetchall(
+                "SELECT k.uid, '', '', '', p.Login, k.vote "
+                "FROM rs_karma k "
+                "LEFT JOIN players p ON p.Id=k.PlayerId "
+                "ORDER BY k.uid ASC"
+            )
+        except Exception:
+            rows = []
+
+    from pyxaseco.core.file_io import file_io
+    return await file_io(_encode_export_rows, rows, identity)
+
+
+def _encode_export_rows(rows, identity):
+    server_login, authcode, nation = identity
+    lines: list[str] = []
+    count = 0
+    for row in rows:
+        uid = str(row[0] or '')
+        if not uid:
+            continue
+        count += 1
+        lines.append(
+            "\t".join([
+                uid,
+                str(row[1] or ''),
+                str(row[2] or ''),
+                str(row[3] or ''),
+                server_login,
+                authcode,
+                nation,
+                str(row[4] or ''),
+                str(int(row[5] or 0)),
+            ])
+        )
+
+    raw = ("\n".join(lines) + ("\n" if lines else "")).encode("utf-8")
+    return base64.b64encode(gzip.compress(raw, compresslevel=9)).decode("ascii"), count
+
+
+async def _send_chat(aseco, login, message):
+    await aseco.client.query_ignore_result(
+        'ChatSendServerMessageToLogin', _fmt_message(aseco, message), login)
+
+
+async def _api_export_votes(aseco: Aseco, player: Any) -> None:
+    from pyxaseco.core.background_jobs import JobEnvelope, JobPolicy, Admission
+    if getattr(aseco, 'is_maniaplanet', False):
+        await _send_chat(aseco, player.login, '{#server}>> {#error}Global ManiaKarma export is not available on PyXasecoMP.')
+        return
+    if _cfg.import_done:
+        await _send_chat(aseco, player.login, '{#server}>> {#admin}Export of local votes already done, skipping...')
+        return
+    if not _api_connected or not _cfg.api_url or not _api_authcode:
+        await _api_auth(aseco)
+        await _send_chat(aseco, player.login, '{#server}>> {#error}ManiaKarma is connecting; try export again shortly.')
+        return
+    login = str(player.login)
+    server_login = str(getattr(aseco.server, 'serverlogin', '') or '')
+    url = _cfg.api_url + '?' + urllib.parse.urlencode({
+        'Action': 'Import', 'login': server_login, 'authcode': _api_authcode,
+        'nation': str(_cfg.nation or '')})
+    timeout = _cfg.wait_timeout
+    identity = server_login, _api_authcode, str(_cfg.nation or '')
+    epoch, website = _api_epoch, _active_website()
+    job = JobEnvelope.capture(aseco.capture_job_context(login=login), {})
+    async def operation(_job):
+        payload, count = await _build_export_payload(aseco, identity)
+        status, _body = await _api_post(url, payload, timeout)
+        return status, count
+    async def apply(result):
+        if result.status == 'completed' and result.value[0] == 200 and epoch == _api_epoch:
+            _cfg.import_done = True
+        if aseco.server.players.get_player(login) is not player:
+            return
+        if result.status != 'completed':
+            message = '{#server}>> {#error}Export outcome is uncertain; verify with ManiaKarma before retrying.'
+        else:
+            status, count = result.value
+            message = {
+                200: f'{{#server}}>> {{#admin}}Export done ({count} votes). Thanks for supporting {website}!',
+                406: '{#server}>> {#error}Export rejected! Check server login and MK_NATION.',
+                409: '{#server}>> {#error}Export was already done; only one export is allowed.',
+            }.get(status, '{#server}>> {#error}Export failed; check ManiaKarma status before retrying.')
+        await _send_chat(aseco, login, message)
+    outcome = aseco.jobs.service('karma', JobPolicy(deadline_seconds=120)).submit(
+        job, operation, apply, current_map=False, dedupe_key='export')
+    message = ('{#server}>> {#admin}Vote export queued.'
+               if outcome in (Admission.ACCEPTED, Admission.DUPLICATE)
+               else '{#server}>> {#error}Vote export could not be queued; try later.')
+    await _send_chat(aseco, login, message)
+
+
+async def _store_karma_votes(aseco: Aseco) -> None:
+    new_votes = dict(_karma.get('new', {}).get('players', {}) or {})
+    if not new_votes:
+        return
+    if _cfg.save_karma_also_local:
+        await _save_local_votes(new_votes)
+    await _api_vote_multisend(aseco, new_votes)
+    _karma['new']['players'].clear()
+
+
+# ---------------------------------------------------------------------------
+# registration
+# ---------------------------------------------------------------------------
+
+def register(aseco: Aseco) -> None:
+    global _karma
+    _apply_enabled_flag(aseco)
+    _karma = _set_empty_karma(True)
+    aseco.register_event('onSync', _mk_onSync)
+    aseco.register_event('onEverySecond', _mk_onEverySecond)
+    aseco.register_event('onShutdown', _mk_onShutdown)
+    aseco.register_event('onChat', _mk_onChat)
+    aseco.register_event('onKarmaChange', _mk_onKarmaChange)
+    aseco.register_event('onPlayerConnect', _mk_onPlayerConnect)
+    aseco.register_event('onPlayerDisconnect', _mk_onPlayerDisconnect)
+    aseco.register_event('onPlayerFinish1', _mk_onPlayerFinish)
+    aseco.register_event('onPlayerManialinkPageAnswer', _mk_onPlayerManialinkPageAnswer)
+    aseco.register_event('onNewChallenge', _mk_onNewChallenge)
+    aseco.register_event('onNewChallenge2', _mk_onNewChallenge2)
+    aseco.register_event('onRestartChallenge2', _mk_onRestartChallenge2)
+    aseco.register_event('onEndRace1', _mk_onEndRace1)
+
+    aseco.add_chat_command('karma', 'Shows karma for the current Map (see: /karma help)')
+    aseco.add_chat_command('+++', 'Set "Fantastic" karma for the current Map')
+    aseco.add_chat_command('++', 'Set "Beautiful" karma for the current Map')
+    aseco.add_chat_command('+', 'Set "Good" karma for the current Map')
+    aseco.add_chat_command('-', 'Set "Bad" karma for the current Map')
+    aseco.add_chat_command('--', 'Set "Poor" karma for the current Map')
+    aseco.add_chat_command('---', 'Set "Waste" karma for the current Map')
+
+    aseco.register_event('onChat_karma', chat_karma)
+    aseco.register_event('onChat_+++', chat_plusplusplus)
+    aseco.register_event('onChat_++', chat_plusplus)
+    aseco.register_event('onChat_+', chat_plus)
+    aseco.register_event('onChat_-', chat_dash)
+    aseco.register_event('onChat_--', chat_dashdash)
+    aseco.register_event('onChat_---', chat_dashdashdash)
+
+
+async def reload_karma_runtime(aseco: Aseco) -> None:
+    global _runtime_aseco, _karma, _current_map, _api_epoch, _auth_pending
+
+    _runtime_aseco = aseco
+    from pyxaseco.core.background_jobs import JobPolicy
+    aseco.jobs.service('karma', JobPolicy(deadline_seconds=120)).invalidate()
+    _api_epoch += 1
+    _auth_pending = False
+    await _load_config(aseco)
+    _cfg.current_state = _display_mode(aseco)
+    _current_map = await _get_current_map_info(aseco)
+
+    if not _karma or not isinstance(_karma.get('global'), dict) or not isinstance(_karma.get('local'), dict):
+        _karma = _set_empty_karma(True)
+
+    _karma['data'].update({
+        'uid': _current_map.get('uid', ''),
+        'id': _current_map.get('id', False),
+        'name': _current_map.get('name', ''),
+        'author': _current_map.get('author', ''),
+        'env': _current_map.get('environment', ''),
+        'tmx': (_current_map.get('mx') or {}).get('id', ''),
+    })
+
+    await _send_widget_combination(aseco, ['hide_all'], None)
+
+    if not _cfg.enabled:
+        return
+
+    if not _cfg.gm_cfg(_cfg.current_state).enabled:
+        return
+    if not _api_connected:
+        await _api_auth(aseco)
+    else:
+        await _fetch_global_votes(aseco)
+
+    try:
+        await _load_local_karma()
+        _calculate_karma(['global', 'local'])
+    except Exception as exc:
+        logger.debug('[ManiaKarma] reload_karma_runtime skipped karma refresh: %s', exc)
+
+    if _cfg.current_state == 7:
+        await _send_widget_combination(aseco, ['skeleton_score', 'cups_values'], None)
+    else:
+        await _send_widget_combination(aseco, ['skeleton_race', 'cups_values'], None)
+
+    for player in _players_all(aseco):
+        await _send_widget_combination(aseco, ['player_marker'], player)
+
+    await _send_connection_status(aseco, _api_connected, _cfg.current_state)

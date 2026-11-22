@@ -1,0 +1,10 @@
+[apps_manager.updates]
+# Opt in after the same MP release is available on both publishers.
+enabled = false
+channel = "stabletm2"
+# Same catalogue, ZIP and SHA-256 file published independently on both hosts.
+verification = "sha256"
+github_manifest = "https://github.com/nilakite2/PyXasecoTM2/releases/latest/download/catalogue.json"
+validation_manifest = "https://tmtrialgy.com/stabletm2/catalogue.json"
+check_interval_seconds = 3600
+notice_interval_seconds = 1800

@@ -1,0 +1,1 @@
+"""ManiaPlanet Stadium panels."""

@@ -1,0 +1,1270 @@
+"""
+Aseco — the main controller for PyXaseco.
+
+Port of the Aseco class in aseco.php.
+
+Responsibilities:
+  - Connect to the dedicated server
+  - Load config, apps, admin lists
+  - Run the main async event loop
+  - Dispatch GbxRemote callbacks to registered app handlers
+  - Manage player connect/disconnect, challenge changes, chat commands
+  - Provide helper API used by apps
+
+Dedicated-specific behavior can be supplied by a subclass.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import html
+import logging
+import re
+import time
+from pathlib import Path
+from typing import Any, Optional
+from uuid import uuid4
+from collections import deque
+
+from pyxaseco import __version__ as PYXASECO_VERSION
+from pyxaseco.core.gbx_client import GbxClient, GbxError, GbxAuthenticationError, GbxProtocolError
+from pyxaseco.core.app_manager import AppManager
+from pyxaseco.core.app_metadata import AppMetadata
+from pyxaseco.core.event_bus import EventBus
+from pyxaseco.core.app_context import AppContext
+from pyxaseco.core.command_registry import CommandRegistry
+from pyxaseco.core.config import (
+    Settings, display_path, load_config, load_adminops, load_bannedips, load_apps_list
+)
+from pyxaseco.core.drivers import DatabaseDriver, GbxDriver, StorageDriver
+from pyxaseco.core.service_registry import ServiceRegistry
+from pyxaseco.core.performance import PerformanceMetrics
+from pyxaseco.core.background_jobs import BackgroundJobs, JobContext
+from pyxaseco.core.record_outbox import RecordOutbox, create_record_outbox
+from pyxaseco.management.config_store import data_path, outbox_path
+from pyxaseco.core.widget_delivery import WidgetDelivery
+from pyxaseco.helpers import format_time_millis
+from pyxaseco.models import (
+    Player, PlayerList, Challenge, Gameinfo, Server, ChatCommand,
+    Record, RecordList
+)
+
+logger = logging.getLogger(__name__)
+
+TMF_BUILD = '2011-02-21'   # minimum required TMF dedicated server build
+
+# Dedicated server callbacks we handle
+_CALLBACK_MAP: dict[str, str] = {
+    'TrackMania.PlayerConnect':               '_cb_player_connect',
+    'TrackMania.PlayerDisconnect':            '_cb_player_disconnect',
+    'TrackMania.PlayerChat':                  '_cb_player_chat',
+    'TrackMania.PlayerFinish':                '_cb_player_finish',
+    'TrackMania.PlayerCheckpoint':            '_cb_player_checkpoint',
+    'TrackMania.PlayerInfoChanged':           '_cb_player_info_changed',
+    'TrackMania.PlayerServerMessageAnswer':   '_cb_player_server_msg_answer',
+    'TrackMania.PlayerManialinkPageAnswer':   '_cb_manialink_answer',
+    'TrackMania.BeginChallenge':              '_cb_begin_challenge',
+    'TrackMania.EndChallenge':                '_cb_end_challenge',
+    'TrackMania.EndRound':                    '_cb_end_round',
+    'TrackMania.BeginRound':                  '_cb_begin_round',
+    'TrackMania.StatusChanged':               '_cb_status_changed',
+    'TrackMania.BillUpdated':                 '_cb_bill_updated',
+    'TrackMania.ChallengeListModified':       '_cb_challenge_list_modified',
+    'TrackMania.PlayerIncoherence':           '_cb_player_incoherence',
+    'TrackMania.VoteUpdated':                 '_cb_vote_updated',
+    'TrackMania.Echo':                        '_cb_echo',
+    'TrackMania.TunnelDataReceived':          '_cb_tunnel_data',
+    'TrackMania.ManualFlowControlTransition': '_cb_flow_transition',
+    'TrackMania.ChallengeRestart':              '_cb_challenge_restart',
+}
+
+
+class Aseco:
+    """Main Xaseco controller."""
+
+    app_loadout_filename = 'apps.toml'
+
+    def __init__(self, debug: bool = False, performance: bool = False, *, client=None):
+        self.debug = debug
+        self.performance = PerformanceMetrics(enabled=performance)
+        self.client = client if client is not None else GbxClient(performance=self.performance)
+        self.gbx = GbxDriver(self.client)
+        self.events = EventBus()
+        self.services = ServiceRegistry()
+        self._run_id = uuid4().hex
+        self._map_generation = 0
+        self._callback_backlog = deque()
+        self._backlog_warning_at = 0.0
+        self.jobs = BackgroundJobs(self.capture_job_context, self.performance)
+        self.record_outbox: RecordOutbox | None = None
+        self.services.register('background_jobs', self.jobs, owner='core')
+        self.ui_delivery = WidgetDelivery(self)
+        self.commands = CommandRegistry()
+        self.settings = Settings()
+        self.server = Server('127.0.0.1', 5000, 'SuperAdmin', 'SuperAdmin')
+        self.context = AppContext(self)
+        self.storage: Optional[StorageDriver] = None
+        self.database = DatabaseDriver(self)
+        self.drivers = {
+            'gbx': self.gbx,
+            'storage': self.storage,
+            'database': self.database,
+        }
+
+        # Runtime state
+        self.startup_phase: bool = True
+        self.warmup_phase: bool = False
+        self.score_phase: bool = False
+        self.restarting: int = 0       # 0=no, 1=instant, 2=chattime
+        self.changingmode: bool = False
+        self.currstatus: int = 0
+        self.prevstatus: int = 0
+        self.uptime: int = int(time.time())
+        self._shutdown_requested: bool = False
+        self._shutdown_stop_server: bool = False
+        self._restart_requested: bool = False
+        self._transport_noise_logged: bool = False
+        self._shutdown_events_fired: bool = False
+        self._after_shutdown = None
+
+        # Chat commands: name → ChatCommand
+        self._chat_commands: dict[str, ChatCommand] = {}
+
+        # Apps
+        self._apps: list[str] = []
+        self._app_metadata: dict[str, AppMetadata] = {}
+
+        # Logging
+        self._logfile: Optional[Any] = None
+        self._chatlogfile: Optional[Any] = None
+
+        # App manager
+        self._app_manager: Optional[AppManager] = None
+        self.app_versions: list[dict[str, Any]] = []
+
+        logger.info('PyXaseco %s initialising', PYXASECO_VERSION)
+
+    # ------------------------------------------------------------------
+    # Public app API
+    # ------------------------------------------------------------------
+
+    def capture_job_context(self, *, login: str = '', nickname: str = '') -> JobContext:
+        """Snapshot identity, never hand workers mutable Player/Challenge objects."""
+        return JobContext(
+            self._run_id, self.server.serverlogin,
+            getattr(self.server.challenge, 'uid', ''), self._map_generation,
+            login, nickname,
+        )
+
+    async def close_background(self) -> None:
+        """Also used by main's fatal/cancelled-run cleanup; safe to call twice."""
+        try:
+            await self._notify_shutdown()
+        finally:
+            try:
+                await self.jobs.stop()
+            finally:
+                try:
+                    if self._app_manager is not None:
+                        await self._app_manager.shutdown_all(self)
+                finally:
+                    if self.record_outbox is not None:
+                        await self.record_outbox.close()
+
+    def register_event(self, event_type: str, handler):
+        """Register a handler for a named event (e.g. 'onChat')."""
+        self.events.register(event_type, handler)
+
+    def release_event(self, event_type: str, param: Any = None):
+        """Schedule an event fire. Returns a coroutine — must be awaited."""
+        return self.events.fire(event_type, self, param)
+
+    def add_chat_command(
+        self,
+        name: str,
+        help_text: str,
+        is_admin: bool = False,
+        *,
+        aliases: list[str] | tuple[str, ...] | None = None,
+        owner: str | None = None,
+        usage: str = "",
+        app: str | None = None,
+        category: str = "chat",
+        parent: str | None = None,
+        display_name: str = "",
+        public: bool = True,
+        hidden: bool = False,
+        permission: str = "",
+        role: str = "",
+        order: int = 0,
+    ):
+        """Register a chat command (e.g. '/help')."""
+        self.register_command(
+            name,
+            help_text,
+            is_admin=is_admin,
+            aliases=aliases,
+            owner=owner,
+            usage=usage,
+            app=app,
+            category=category,
+            parent=parent,
+            display_name=display_name,
+            public=public,
+            hidden=hidden,
+            permission=permission,
+            role=role,
+            order=order,
+        )
+
+    def register_command(
+        self,
+        name: str,
+        help_text: str,
+        *,
+        is_admin: bool = False,
+        aliases: list[str] | tuple[str, ...] | None = None,
+        owner: str | None = None,
+        usage: str = "",
+        app: str | None = None,
+        category: str = "chat",
+        parent: str | None = None,
+        display_name: str = "",
+        public: bool = True,
+        hidden: bool = False,
+        permission: str = "",
+        role: str = "",
+        order: int = 0,
+    ):
+        registration = self.commands.register(
+            name,
+            help_text,
+            is_admin=is_admin,
+            owner=owner,
+            aliases=aliases,
+            usage=usage,
+            app=app,
+            category=category,
+            parent=parent,
+            display_name=display_name,
+            public=public,
+            hidden=hidden,
+            permission=permission,
+            role=role,
+            order=order,
+        )
+        self._chat_commands[registration.name] = ChatCommand(registration.name, help_text, is_admin)
+        for alias in registration.aliases:
+            self._chat_commands[alias] = ChatCommand(alias, help_text, is_admin)
+        if self.debug:
+            logger.debug('Command registered: /%s aliases=%s owner=%s', registration.name, list(registration.aliases), owner)
+        return registration
+
+    def get_command(self, name: str):
+        return self.commands.get(name)
+
+    def iter_registered_commands(self):
+        return self.commands.commands().items()
+
+    def register_service(self, name: str, service: Any, *, owner: str | None = None, aliases: list[str] | tuple[str, ...] | None = None):
+        return self.services.register(name, service, owner=owner, aliases=aliases)
+
+    def get_service(self, name: str, default: Any = None) -> Any:
+        return self.services.get(name, default)
+
+    def require_service(self, name: str) -> Any:
+        return self.services.require(name)
+
+    def has_service(self, name: str) -> bool:
+        return self.services.has(name)
+
+    def register_app_metadata(self, metadata: AppMetadata):
+        self._app_metadata[metadata.app_id] = metadata
+
+    def get_app_metadata(self, app_id: str) -> AppMetadata | None:
+        return self._app_metadata.get(app_id)
+
+    def get_app_context(self, app_id: str):
+        if self._app_manager is None:
+            metadata = self._app_metadata.get(app_id)
+            if metadata is None:
+                return None
+            return self.context.with_app(metadata)
+        return self._app_manager.app_contexts.get(app_id)
+
+    @property
+    def app_metadata(self) -> dict[str, AppMetadata]:
+        return dict(self._app_metadata)
+
+    @property
+    def active_apps(self) -> list[str]:
+        if self._app_manager is None:
+            return list(self._apps)
+        return self._app_manager.loaded_apps
+
+    @property
+    def loadout_entries(self) -> list[str]:
+        if self._app_manager is None:
+            return []
+        return self._app_manager.loaded_entries
+
+    @property
+    def fulfilled_entries(self) -> list[str]:
+        if self._app_manager is None:
+            return list(self._apps)
+        return self._app_manager.fulfilled_entries
+
+    def get_chat_message(self, name: str) -> str:
+        """Return a configured chat message by key."""
+        msgs = self.settings.chat_messages
+        items = msgs.get(name.upper(), [''])
+        raw = items[0] if items else ''
+        return self.format_colors(html.unescape(raw))
+
+    # -- Admin checks --
+
+    def ip_match(self, playerip: str, listip: str) -> bool:
+        """
+        Check if playerip matches listip (exact, class C wildcard .*, or class B wildcard .*.*).
+        Comma-separated IPs are supported.
+        """
+        if playerip == '':
+            return True  # offline player
+        for ip in listip.split(','):
+            ip = ip.strip()
+            if re.match(r'^\d+\.\d+\.\d+\.\d+$', ip):
+                if playerip == ip:
+                    return True
+            elif ip.endswith('.*.*'):
+                prefix = ip[:-4]
+                if re.sub(r'\.\d+\.\d+$', '', playerip) == prefix:
+                    return True
+            elif ip.endswith('.*'):
+                prefix = ip[:-2]
+                if re.sub(r'\.\d+$', '', playerip) == prefix:
+                    return True
+        return False
+
+    def _check_in_list(self, player: Player, login_list: list, ip_list: list,
+                       list_name: str) -> bool:
+        if not player.login:
+            return False
+        try:
+            idx = login_list.index(player.login)
+        except ValueError:
+            return False
+        ip = ip_list[idx] if idx < len(ip_list) else ''
+        if ip and not self.ip_match(player.ip, ip):
+            logger.warning("Attempt to use %s login '%s' from IP %s",
+                           list_name, player.login, player.ip)
+            return False
+        return True
+
+    def is_master_admin(self, player: Player) -> bool:
+        ma = self.settings.masteradmin_list
+        return self._check_in_list(player, ma.get('TMLOGIN', []),
+                                   ma.get('IPADDRESS', []), 'MasterAdmin')
+
+    def is_admin(self, player: Player) -> bool:
+        al = self.settings.admin_list
+        return self._check_in_list(player, al.get('TMLOGIN', []),
+                                   al.get('IPADDRESS', []), 'Admin')
+
+    def is_operator(self, player: Player) -> bool:
+        ol = self.settings.operator_list
+        return self._check_in_list(player, ol.get('TMLOGIN', []),
+                                   ol.get('IPADDRESS', []), 'Operator')
+
+    def is_any_admin(self, player: Player) -> bool:
+        return self.is_master_admin(player) or self.is_admin(player) or self.is_operator(player)
+
+    def is_master_admin_login(self, login: str) -> bool:
+        return login in self.settings.masteradmin_list.get('TMLOGIN', [])
+
+    def is_admin_login(self, login: str) -> bool:
+        return login in self.settings.admin_list.get('TMLOGIN', [])
+
+    def is_operator_login(self, login: str) -> bool:
+        return login in self.settings.operator_list.get('TMLOGIN', [])
+
+    def allow_admin_ability(self, ability: str) -> bool:
+        key = ability.upper()
+        items = self.settings.adm_abilities.get(key, []) if isinstance(
+            self.settings.adm_abilities, dict) else []
+        return bool(items[0]) if items else False
+
+    def allow_op_ability(self, ability: str) -> bool:
+        key = ability.upper()
+        items = self.settings.op_abilities.get(key, []) if isinstance(
+            self.settings.op_abilities, dict) else []
+        return bool(items[0]) if items else False
+
+    def allow_ability(self, player: Player, ability: str) -> bool:
+        if self.settings.lock_password and not player.unlocked:
+            return False
+        if self.is_master_admin(player):
+            return True
+        if self.is_admin(player):
+            return self.allow_admin_ability(ability)
+        if self.is_operator(player):
+            return self.allow_op_ability(ability)
+        return False
+
+    # -- Color formatting --
+
+    def format_colors(self, text: str) -> str:
+        if not text:
+            return text
+    
+        colors = self.settings.chat_colors if isinstance(self.settings.chat_colors, dict) else {}
+    
+        def repl(match):
+            key = match.group(1)
+            val = colors.get(key)
+            if isinstance(val, list):
+                val = val[0] if val else ''
+            return str(val) if val else match.group(0)
+    
+        return re.sub(r'\{#?(\w+)\}', repl, text)
+
+    def strip_colors(self, text: str) -> str:
+        """Strip Maniaplanet colour codes ($xxx) from a string."""
+        return re.sub(r'\$(?:[0-9a-fA-F]{1,3}|[lLsShHiIoOpP]|<|>|\[|\])', '', text)
+
+    def format_time(self, ms: int) -> str:
+        """Format a race time with milliseconds, including hours when needed."""
+        return format_time_millis(ms)
+
+    # -- Console output --
+
+    def console(self, message: str, *args):
+        """Log a message to stdout and logfile."""
+        for i, arg in enumerate(args, 1):
+            message = message.replace('{' + str(i) + '}', str(arg))
+        print(message)
+        self._do_log(message + '\n')
+
+    def console_text(self, message: str, *args):
+        """Alias for console()."""
+        self.console(message, *args)
+
+    def _do_log(self, text: str):
+        """Write to the log file."""
+        logging.getLogger('pyxaseco.console.file').info(
+            text.rstrip('\n'), extra={'console_text': True})
+
+    async def _notify_shutdown(self) -> None:
+        """Retain app-owned work once, including fatal/transport exits."""
+        if self._shutdown_events_fired:
+            return
+        self._shutdown_events_fired = True
+        await self.release_event('onShutdown', {
+            'stop_server': self._shutdown_stop_server,
+            'restart': self._restart_requested,
+        })
+
+    async def shutdown(self, stop_server: bool = False, *, after_close=None):
+        """
+        Request a graceful shutdown of PyXaseco.
+        If stop_server=True, also try to stop the dedicated server.
+        """
+        self._shutdown_requested = True
+        self._shutdown_stop_server = bool(stop_server)
+        self._after_shutdown = after_close
+
+        logger.info('Shutdown requested (stop_server=%s)', stop_server)
+
+        # Let plugins react if they want to.
+        try:
+            await self._notify_shutdown()
+        except Exception as e:
+            logger.warning('onShutdown event failed: %s', e)
+
+    async def restart(self):
+        """
+        Request a full controller restart.
+        The process re-exec is handled by main.py after the run loop exits.
+        """
+        self._restart_requested = True
+        self._shutdown_requested = True
+        self._shutdown_stop_server = False
+
+        logger.info('Restart requested')
+
+        try:
+            await self._notify_shutdown()
+        except Exception as e:
+            logger.warning('onShutdown event failed during restart: %s', e)
+
+    @property
+    def restart_requested(self) -> bool:
+        return bool(self._restart_requested)
+
+    def _request_transport_restart(self) -> None:
+        """Stop callback dispatch and restart after an unexpected GBX loss."""
+        if self._shutdown_requested:
+            return
+        logger.error('GBX connection lost - requesting controller restart')
+        self._restart_requested = True
+        self._shutdown_requested = True
+
+    async def _perform_shutdown(self):
+        """
+        Final shutdown sequence after main loop exits.
+        """
+        logger.info('Performing shutdown sequence')
+        await self._notify_shutdown()
+        await self.performance.stop()
+
+        await self.close_background()
+
+        if self._after_shutdown is not None:
+            action, self._after_shutdown = self._after_shutdown, None
+            # Maintenance must never re-exec into partially reset data on failure.
+            self._restart_requested = False
+            try:
+                self._restart_requested = await action() is True
+            except Exception:
+                logger.exception('Post-shutdown maintenance failed; controller remains stopped. Review the cleanup log and backups.')
+
+        if self._shutdown_stop_server:
+            lifecycle = self.get_service('management.lifecycle')
+            if lifecycle is not None and lifecycle.manages_dedicated:
+                try:
+                    await lifecycle.stop_dedicated()
+                    logger.info('Paired dedicated-server service stopped')
+                except Exception:
+                    logger.error('Paired service stop failed; no raw QuitServer fallback was sent', exc_info=True)
+            else:
+                for method_name in ('StopServer', 'QuitServer'):
+                    try:
+                        await self.client.query_ignore_result(method_name)
+                        logger.info('Dedicated server stop requested via %s', method_name)
+                        break
+                    except Exception:
+                        continue
+
+        # Best-effort disconnect
+        try:
+            close_fn = getattr(self.client, 'close', None) or getattr(self.client, 'disconnect', None)
+            if callable(close_fn):
+                result = close_fn()
+                if asyncio.iscoroutine(result):
+                    await result
+        except Exception as e:
+            logger.warning('Client close failed: %s', e)
+
+    # ------------------------------------------------------------------
+    # Startup
+    # ------------------------------------------------------------------
+
+    async def run(self, config_file: str = 'config.toml'):
+        """Main entry point. Loads config, connects, runs event loop."""
+        print('# initialize PyXaseco ' + '=' * 60)
+        logger.info('PyXaseco %s starting', PYXASECO_VERSION)
+
+        # Resolve the config file path; if relative, make it absolute
+        # relative to the current working directory (where the user runs from).
+        config_path = Path(config_file).resolve()
+        # All other config-relative files live in the same directory as config.toml
+        self._base_dir = config_path.parent
+        self.storage = StorageDriver(self._base_dir)
+        self.drivers['storage'] = self.storage
+        # Load config
+        self.console_text('[PyXaseco] Loading settings [{1}]', display_path(config_path))
+        if not self._load_configuration(config_path):
+            raise RuntimeError(f'Could not read/parse config file {config_path}')
+
+        outbox = outbox_path(self._base_dir)
+        self.record_outbox = create_record_outbox(
+            outbox,
+            self.settings.durable_record_delivery,
+            lock_path=data_path(self._base_dir, 'locks', 'state', outbox.name + '.lock'),
+        )
+        self.services.register('record_outbox', self.record_outbox, owner='core')
+
+        # Apply server connection settings from config
+        self.server.ip       = self.settings.server_ip
+        self.server.port     = self.settings.server_port
+        self.server.login    = self.settings.server_login
+        self.server.password = self.settings.server_password
+        self.server.timeout  = self.settings.server_timeout
+
+        def _resolve(filename: str) -> Path:
+            """Resolve a config-relative filename to an absolute path."""
+            p = Path(filename)
+            if p.is_absolute():
+                return p
+            return self._base_dir / p
+
+        # Load admin/op lists
+        adminops_path = _resolve(self.settings.adminops_file)
+        self.console_text('[PyXaseco] Loading admin/ops lists [{1}]', display_path(adminops_path))
+        load_adminops(adminops_path, self.settings)
+
+        # Load banned IPs
+        bannedips_path = _resolve(self.settings.bannedips_file)
+        self.console_text('[PyXaseco] Loading banned IPs [{1}]', display_path(bannedips_path))
+        load_bannedips(bannedips_path, self.settings)
+
+        # Load apps
+        apps_toml = self._base_dir / self.app_loadout_filename
+        self.console_text('[PyXaseco] Loading app loadout [{1}]', display_path(apps_toml))
+        app_entries = self._load_app_entries(apps_toml)
+        apps_dir = self._base_dir / 'apps'
+        self._app_manager = AppManager(apps_dir)
+        self._app_manager.load_all(app_entries, self)
+        self._apps = self._app_manager.loaded_apps
+
+        # Connect to dedicated server
+        self.console('[PyXaseco] Connecting to {1}:{2}', self.server.ip, self.server.port)
+        await self._connect()
+        self.console('[PyXaseco] Connection established!')
+
+        await self._configure_dedicated()
+
+        # Register core ManiaLink page-navigation handler
+        from pyxaseco.helpers import setup_manialink_events
+        setup_manialink_events(self)
+
+        # Fire startup event
+        await self.jobs.start()
+        await self.release_event('onStartup', None)
+        await self._prepare_server_sync()
+
+        # Sync with server state
+        await self._server_sync()
+
+        if self._app_manager is not None:
+            await self._app_manager.startup_all(self)
+
+        # Send visual header to in-game chat
+        await self._send_header()
+
+        # Main loop
+        self.startup_phase = False
+        await self._main_loop()
+        await self._perform_shutdown()
+
+    def _load_configuration(self, config_path):
+        return load_config(config_path, self.settings)
+
+    def _load_app_entries(self, apps_path):
+        return load_apps_list(apps_path)
+
+    async def _configure_dedicated(self):
+        version = await self.client.query('GetVersion')
+        self.server.game = version.get('Name', '')
+        self.server.version = version.get('Version', '')
+        self.server.build = version.get('Build', '')
+        if self.server.get_game() != 'TMF':
+            raise RuntimeError(f"This is a TMF-only build but server reports game: {self.server.game}")
+
+    async def _prepare_server_sync(self):
+        pass
+
+    async def _connect(self):
+        """Authenticate with the dedicated server and enable callbacks."""
+        if self.settings.server_password == 'SuperAdmin':
+            logger.warning("Insecure password 'SuperAdmin' — change it in dedicated config!")
+
+        deadline = time.monotonic() + max(120.0, float(self.server.timeout or 0))
+        try:
+            async with asyncio.timeout_at(deadline):
+                while True:
+                    try:
+                        await self.gbx.connect(
+                            self.server.ip, self.server.port,
+                            timeout=max(1.0, float(self.server.timeout or 10)),
+                        )
+                        await self.gbx.authenticate(self.server.login, self.server.password)
+                        await self.gbx.query('EnableCallbacks', True)
+                        await self._wait_server_ready(deadline)
+                        return
+                    except (GbxAuthenticationError, GbxProtocolError):
+                        raise
+                    except GbxError as error:
+                        if error.code != -32300:
+                            raise
+                        await self.client.disconnect()
+                        logger.warning('Dedicated server connection unavailable; retrying: %s', error)
+                        await asyncio.sleep(2)
+        except TimeoutError as error:
+            self._restart_requested = True
+            self._shutdown_requested = True
+            raise RuntimeError('Timed out waiting for dedicated server to be ready; '
+                               'controller restart will retry the connection') from error
+
+    async def _wait_server_ready(self, deadline=None):
+        """Poll GetStatus until server is Running - Play (code 4)."""
+        if deadline is None:
+            deadline = time.monotonic() + max(120.0, float(self.server.timeout or 0))
+        last = ''
+        last_error: Exception | None = None
+
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('Dedicated server readiness deadline expired') from last_error
+            try:
+                status = await asyncio.wait_for(self.client.query('GetStatus'), timeout=remaining)
+                last_error = None
+            except Exception as e:
+                last_error = e
+                if not self.client.is_connected():
+                    raise
+                if time.monotonic() >= deadline:
+                    raise TimeoutError('Dedicated server readiness deadline expired') from e
+                logger.warning('GetStatus failed while waiting for dedicated server readiness: %s', e)
+                await asyncio.sleep(1)
+                continue
+
+            if status.get('Code') == 4:
+                return
+
+            if not last:
+                self.console('[PyXaseco] Waiting for server to reach Running - Play...')
+
+            name = status.get('Name', '')
+            if name != last:
+                self.console('[PyXaseco] Server status: {1}', name)
+                last = name
+
+            if time.monotonic() >= deadline:
+                raise TimeoutError('Dedicated server readiness deadline expired')
+
+            await asyncio.sleep(1)
+
+    async def _server_sync(self):
+        """Sync server state."""
+        # Server identity
+        sys_info = await self.client.query('GetSystemInfo')
+        self.server.serverlogin = sys_info.get('ServerLogin', '')
+
+        player_info = await self.client.query('GetDetailedPlayerInfo', self.server.serverlogin)
+        self.server.id       = player_info.get('PlayerId', 0)
+        self.server.nickname = player_info.get('NickName', '')
+        path = player_info.get('Path', '')
+        self.server.zone   = path[6:] if path.startswith('World|') else path
+        self.server.rights = (player_info.get('OnlineRights', 0) == 3)
+
+        ladder = await self.client.query('GetLadderServerLimits')
+        self.server.laddermin = ladder.get('LadderServerLimitMin', 0.0)
+        self.server.laddermax = ladder.get('LadderServerLimitMax', 0.0)
+
+        relay_count = await self.client.query('IsRelayServer')
+        self.server.isrelay = relay_count > 0
+        if self.server.isrelay:
+            self.server.relaymaster = await self.client.query('GetMainServerPlayerInfo', 1)
+
+        self.server.packmask = await self.client.query('GetServerPackMask')
+
+        # Clear leftover ManiaLinks
+        await self.client.query_ignore_result('SendHideManialinkPage')
+
+        # Game info
+        gameinfo_raw = await self.client.query('GetCurrentGameInfo', 1)
+        self.server.gameinfo = Gameinfo(gameinfo_raw)
+
+        # Status
+        status = await self.client.query('GetStatus')
+        self.currstatus = status.get('Code', 0)
+        self.score_phase = self.currstatus == 5
+
+        # Directories
+        self.server.gamedir  = await self.client.query('GameDataDirectory')
+        self.server.trackdir = await self.client.query('GetTracksDirectory')
+
+        # Server options
+        await self._get_server_options()
+        await self._enforce_runtime_server_options()
+        
+        # Fire sync event
+        await self.release_event('onSync', None)
+
+        # Populate current player list
+        player_list = await self.client.query('GetPlayerList', 300, 0, 2)
+        if player_list:
+            for pinfo in player_list:
+                login = pinfo.get('Login', '')
+                if login and login.lower() != self.server.serverlogin.lower():
+                    await self._player_connect([login, ''])
+
+        # If already in race, load current challenge
+        if self.currstatus != 100:
+            await self._begin_race(None)
+
+    async def _get_server_options(self):
+        """Fetch and cache server options."""
+        opts = await self.client.query('GetServerOptions')
+        self.server.name    = opts.get('Name', '')
+        self.server.maxplay = opts.get('CurrentMaxPlayers', 0)
+        self.server.maxspec = opts.get('CurrentMaxSpectators', 0)
+
+    async def _enforce_runtime_server_options(self):
+        """
+        Apply controller-owned dedicated-server runtime options.
+
+        Keep VehicleNetQuality pinned to 1 so reconnects / restarts restore
+        the expected networking behavior automatically.
+        """
+        try:
+            await self.client.query_ignore_result('SetVehicleNetQuality', 1)
+        except Exception as e:
+            logger.warning('Could not enforce SetVehicleNetQuality(1): %s', e)
+
+    async def _send_header(self):
+        """Send a version header to in-game server chat."""
+        msg = f'$z$s$fffPyXaseco $f80{PYXASECO_VERSION}$fff started successfully!'
+        await self.client.query_ignore_result('ChatSendServerMessage', msg)
+
+    # ------------------------------------------------------------------
+    # Main async event loop
+    # ------------------------------------------------------------------
+
+    async def _main_loop(self):
+        """
+        Continuously poll callbacks from the GbxRemote client and dispatch them.
+        """
+        await self.performance.start()
+        prev_second = int(time.monotonic())
+        while not self._shutdown_requested:
+            if not self.client.is_connected():
+                self._request_transport_restart()
+                break
+
+            loop_start = time.monotonic()
+
+            # Dispatch any buffered callbacks
+            await self._execute_callbacks()
+            if self._shutdown_requested:
+                break
+
+            # Apply detached results only after authoritative callbacks, never
+            # from a worker. Short handlers must not do external I/O here.
+            if not self._callback_backlog:
+                await self.jobs.drain()
+            if self._shutdown_requested:
+                break
+
+            # Fire main loop event
+            await self.release_event('onMainLoop', None)
+            if self._shutdown_requested:
+                break
+
+            # Fire per-second event
+            now = int(time.monotonic())
+            if now != prev_second:
+                prev_second = now
+                await self.release_event('onEverySecond', None)
+
+            # Maintain ~20ms loop cadence
+            elapsed = time.monotonic() - loop_start
+            sleep_time = max(0.0, 0.02 - elapsed)
+            self.performance.observe('controller.tick', elapsed)
+            await asyncio.sleep(sleep_time)
+
+    async def _execute_callbacks(self):
+        """Drain the GbxClient callback queue and dispatch each."""
+        if self.performance.enabled:
+            callbacks = self.client.get_timed_cb_responses()
+        else:
+            callbacks = [(method, params, None) for method, params in self.client.get_cb_responses()]
+        self._callback_backlog.extend(callbacks)
+        self.performance.gauge_max('callbacks.backlog', len(self._callback_backlog))
+        now = time.monotonic()
+        if len(self._callback_backlog) >= 1000 and now - self._backlog_warning_at >= 60:
+            self._backlog_warning_at = now
+            logger.warning('Callback backlog is %s; processing FIFO without dropping gameplay events',
+                           len(self._callback_backlog))
+        started, count = time.monotonic(), 0
+        while self._callback_backlog and count < 64 and not self._shutdown_requested:
+            if count and time.monotonic() - started >= 0.01:
+                break
+            method, params, received_at = self._callback_backlog.popleft()
+            count += 1
+            if received_at is not None:
+                self.performance.observe('callbacks.age', time.monotonic() - received_at)
+            self.performance.increment('callbacks.dispatched')
+            if not self.client.is_connected():
+                self._request_transport_restart()
+                break
+            handler_name = self._callback_handler_name(method)
+            if handler_name:
+                handler = getattr(self, handler_name, None)
+                if handler:
+                    try:
+                        with self.performance.measure(f'callback.{method}'):
+                            await handler(params)
+                    except Exception as e:
+                        if not self.client.is_connected():
+                            self._request_transport_restart()
+                            break
+                        logger.error('Callback error in %s: %s', handler_name, e, exc_info=True)
+                    if not self.client.is_connected():
+                        self._request_transport_restart()
+                        break
+            else:
+                if self.debug:
+                    logger.debug('Unhandled callback: %s', method)
+
+    # ------------------------------------------------------------------
+    # Dedicated server callback handlers
+    # ------------------------------------------------------------------
+
+    def _callback_handler_name(self, method):
+        return _CALLBACK_MAP.get(method)
+
+    async def _cb_player_connect(self, params: list):
+        """TrackMania.PlayerConnect: [login, is_spectator]"""
+        await self._player_connect(params)
+
+    async def _cb_player_disconnect(self, params: list):
+        """TrackMania.PlayerDisconnect: [login]"""
+        login = params[0] if params else ''
+        self.ui_delivery.invalidate(login)
+        player = self.server.players.remove_player(login)
+        if player:
+            await self.release_event('onPlayerDisconnect', player)
+            self.console_text('[PyXaseco] Player disconnected: {1}', login)
+
+    async def _cb_player_chat(self, params: list):
+        """TrackMania.PlayerChat: [uid, login, text, is_registered_cmd]"""
+        await self.release_event('onChat', params)
+        await self._handle_chat_command(params)
+
+    async def _cb_player_finish(self, params: list):
+        """TrackMania.PlayerFinish: [uid, login, time_or_score]"""
+        await self._player_finish(params)
+
+    async def _cb_player_checkpoint(self, params: list):
+        """TrackMania.PlayerCheckpoint"""
+        if not self.server.isrelay:
+            await self.release_event('onCheckpoint', params)
+
+    async def _cb_player_info_changed(self, params: list):
+        """TrackMania.PlayerInfoChanged: [player_info]"""
+        info = params[0] if params else {}
+        login = info.get('Login', '')
+        player = self.server.players.get_player(login)
+        if player:
+            player.isspectator    = info.get('IsSpectator', player.isspectator)
+            player.isofficial     = info.get('IsInOfficialMode', player.isofficial)
+            player.teamid         = int(info.get('TeamId', player.teamid) or 0)
+            player.teamname       = info.get('TeamName', player.teamname)
+            # Store the packed SpectatorStatus so plugins can decode target/auto info
+            # without an extra GetPlayerInfo round-trip.
+            if 'PlayerId' in info:
+                player.pid = int(info['PlayerId'])
+            if 'SpectatorStatus' in info:
+                player.spectatorstatus = int(info['SpectatorStatus'] or 0)
+                player.isspectator = player.spectatorstatus % 10 != 0
+            await self.release_event('onPlayerInfoChanged', player)
+
+    async def _cb_player_server_msg_answer(self, params: list):
+        """TrackMania.PlayerServerMessageAnswer: [uid, login, answer]"""
+        await self.release_event('onPlayerServerMessageAnswer', params)
+
+    async def _cb_manialink_answer(self, params: list):
+        """TrackMania.PlayerManialinkPageAnswer: [uid, login, answer]"""
+        await self.release_event('onPlayerManialinkPageAnswer', params)
+
+    async def _cb_begin_challenge(self, params: list):
+        """TrackMania.BeginChallenge: [challenge, warmup, match_continuation]"""
+        await self._begin_race(params)
+
+    async def _cb_end_challenge(self, params: list):
+        """TrackMania.EndChallenge: [rankings, challenge, was_warmup, ...]"""
+        await self._end_race(params)
+
+    async def _cb_end_round(self, params: list):
+        """TrackMania.EndRound"""
+        await self.release_event('onEndRound', None)
+
+    async def _cb_begin_round(self, params: list):
+        """TrackMania.BeginRound"""
+        self.score_phase = False
+        await self.release_event('onBeginRound', None)
+
+    async def _cb_status_changed(self, params: list):
+        """TrackMania.StatusChanged: [code, name]"""
+        self.prevstatus = self.currstatus
+        self.currstatus = params[0] if params else 0
+        if self.currstatus in (4, 5):
+            self.score_phase = self.currstatus == 5
+
+        # Check warmup state on Sync/Finish
+        if self.currstatus in (3, 5):
+            try:
+                self.warmup_phase = await self.client.query('GetWarmUp')
+            except GbxError:
+                self.warmup_phase = False
+
+        await self.release_event(f'onStatusChangeTo{self.currstatus}', params)
+
+    async def _cb_bill_updated(self, params: list):
+        await self.release_event('onBillUpdated', params)
+
+    async def _cb_challenge_list_modified(self, params: list):
+        await self.release_event('onChallengeListModified', params)
+
+    async def _cb_player_incoherence(self, params: list):
+        await self.release_event('onPlayerIncoherence', params)
+
+    async def _cb_vote_updated(self, params: list):
+        await self.release_event('onVoteUpdated', params)
+
+    async def _cb_echo(self, params: list):
+        await self.release_event('onEcho', params)
+
+    async def _cb_tunnel_data(self, params: list):
+        await self.release_event('onTunnelDataReceived', params)
+
+    async def _cb_flow_transition(self, params: list):
+        await self.release_event('onManualFlowControlTransition', params)
+
+    # ------------------------------------------------------------------
+    # Player management
+    # ------------------------------------------------------------------
+
+    async def _player_connect(self, params: list):
+        if params:
+            self.ui_delivery.invalidate(params[0])
+        """
+        Handle a new player connecting.
+        params: [login, is_spectator_str_or_bool]
+        """
+        login = params[0] if params else ''
+        if not login:
+            return
+
+        # Don't add the server's own dedicated account
+        if (hasattr(self.server, 'serverlogin') and
+                login.lower() == self.server.serverlogin.lower()):
+            return
+
+        # Fetch detailed player info
+        try:
+            info = await self.client.query('GetDetailedPlayerInfo', login)
+        except GbxError as e:
+            if e.code == -1000 and 'login unknown' in e.message.lower():
+                # Startup lists/callbacks can outlive a player who just left.
+                # Do not publish a fictional connection to DB and UI handlers.
+                logger.debug('Skipping stale player connection for %s: login no longer present', login)
+                return
+            logger.warning('GetDetailedPlayerInfo failed for %s: %s', login, e)
+            # Create minimal player
+            info = {'Login': login, 'NickName': login,
+                    'IPAddress': '', 'IsSpectator': False,
+                    'IsInOfficialMode': False, 'LadderStats': {'TeamName': '', 'PlayerRankings': [{}]},
+                    'Path': 'World|Unknown', 'ClientVersion': '',
+                    'OnlineRights': 0, 'Language': '', 'Avatar': {}, 'TeamId': 0}
+
+        # Detailed info omits the packed spectator target used by checkpoint HUDs.
+        try:
+            live_info = await self.client.query('GetPlayerInfo', login, 1) or {}
+        except GbxError as e:
+            if e.code == -1000 and 'login unknown' in e.message.lower():
+                return
+            logger.debug('GetPlayerInfo unavailable on connect for %s: %s', login, e)
+        else:
+            for key in ('PlayerId', 'TeamId', 'SpectatorStatus'):
+                if key in live_info:
+                    info[key] = live_info[key]
+            if 'SpectatorStatus' in live_info:
+                info['IsSpectator'] = int(live_info['SpectatorStatus'] or 0) % 10 != 0
+
+        player = Player(info)
+
+        # Check if IP is banned
+        for banned_ip in self.settings.bannedips:
+            if self.ip_match(player.ip, banned_ip):
+                logger.warning('Banned IP %s tried to connect as %s', player.ip, login)
+                await self.client.query_ignore_result('Kick', login, 'Your IP is banned.')
+                return
+
+        self.server.players.add_player(player)
+        self.console_text('[PyXaseco] Player connected: {1} ({2})', player.nickname, login)
+
+        await self.release_event('onPlayerConnect', player)
+        await self.release_event('onPlayerConnect2', player)
+
+    async def _player_finish(self, params: list):
+        """
+        Handle player finishing a lap/challenge.
+        params: [uid, login, time_or_score]
+        """
+        if len(params) < 3:
+            return
+        _uid, login, score = params[0], params[1], params[2]
+        player = self.server.players.get_player(login)
+        mode = getattr(self.server.gameinfo, 'mode', -1)
+        if not player:
+            return
+
+        is_zero_score = (score == 0)
+        if is_zero_score:
+            player.retired = (mode != Gameinfo.TA)
+            player.finished_waiting = False
+            if mode == Gameinfo.TA:
+                player.isspectator = False
+                player.spectatorstatus = 0
+        else:
+            player.retired = False
+            player.finished_waiting = (mode in (Gameinfo.RNDS, Gameinfo.TEAM, Gameinfo.LAPS, Gameinfo.CUP))
+
+        # Build the finish_item object used by downstream race handlers.
+        from pyxaseco.models import Record, Challenge as _Ch
+        import time as _t, datetime as _dt
+        finish_item = Record()
+        finish_item.player = player
+        finish_item.score  = score
+        finish_item.date   = _dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        finish_item.challenge = self.server.challenge
+        finish_item.new = False
+
+        if is_zero_score and player.retired:
+            await self.release_event('onPlayerRetire', player)
+
+        await self.release_event('onPlayerFinish1', finish_item)  # rich object event
+        await self.release_event('onPlayerFinish', params)        # legacy compatibility event
+
+    # ------------------------------------------------------------------
+    # Challenge / race management
+    # ------------------------------------------------------------------
+
+    async def _begin_race(self, params):
+        """
+        Handle beginning of a new challenge.
+        params: [challenge_info, warmup, match_continuation]  or None (startup).
+        """
+        self._map_generation += 1
+        self.score_phase = params is None and self.currstatus == 5
+        if params:
+            self.warmup_phase = bool(params[1]) if len(params) > 1 else False
+
+        # Refresh game mode before firing challenge events so plugins see the
+        # actual next-mode state after /admin setgamemode + skip/restart flows.
+        try:
+            gameinfo_raw = await self.client.query('GetCurrentGameInfo', 1)
+            self.server.gameinfo = Gameinfo(gameinfo_raw)
+            if getattr(self, 'changingmode', False):
+                self.changingmode = False
+        except GbxError as e:
+            logger.warning('GetCurrentGameInfo refresh before begin race failed: %s', e)
+
+        # Fetch current challenge info
+        try:
+            challenge_info = await self._current_challenge_info(params)
+        except GbxError as e:
+            logger.error('GetCurrentChallengeInfo failed: %s', e)
+            return
+
+        self.server.challenge = Challenge(challenge_info)
+        self.server.records.clear()
+
+        await self.release_event('onNewChallenge', self.server.challenge)
+        await self.release_event('onBeginRace', self.server.challenge)
+        await self.release_event('onNewChallenge2', self.server.challenge)
+
+        self.console('[PyXaseco] New challenge: {1}', self.server.challenge.name)
+
+    async def _current_challenge_info(self, params):
+        return await self.client.query('GetCurrentChallengeInfo')
+
+    async def _end_race(self, params: list):
+        """TrackMania.EndChallenge: params[0]=rankings, params[1]=challenge"""
+        rankings = params[0] if params else []
+        self.score_phase = True
+        await self.release_event('onEndRace1', params)  # pre-event (votes reset)
+        await self.release_event('onEndRace', params)
+        await self.release_event('onEndRaceRanking', rankings)
+
+    async def _cb_challenge_restart(self, params: list):
+        """TrackMania.ChallengeRestart"""
+        self._map_generation += 1
+        self.score_phase = False
+        await self.release_event('onRestartChallenge', params)
+        await self.release_event('onRestartChallenge2', params)
+
+    # ------------------------------------------------------------------
+    # Chat command dispatcher
+    # ------------------------------------------------------------------
+
+    async def _handle_chat_command(self, params: list):
+        """
+        Parse a PlayerChat callback for slash-commands.
+        params: [uid, login, text, is_registered_cmd]
+        """
+        if len(params) < 3:
+            return
+
+        _uid, login, text = params[0], params[1], params[2]
+        await self.dispatch_chat_command(login, text)
+
+    async def dispatch_chat_command(self, login: str, text: str) -> bool:
+        """
+        Dispatch a slash command internally without needing a public chat callback.
+
+        Returns True when a registered slash command was recognized and dispatched,
+        otherwise False.
+        """
+        stripped = str(text or '').strip()
+        if stripped.startswith('//'):
+            admin_tail = stripped[2:].lstrip()
+            text = '/admin' if not admin_tail else f'/admin {admin_tail}'
+
+        if not text or not str(text).startswith('/'):
+            return False
+
+        # Split command name and args
+        parts = str(text)[1:].split(None, 1)
+        cmd_name = parts[0].lower() if parts else ''
+        cmd_args = parts[1] if len(parts) > 1 else ''
+
+        cmd = self.commands.get(cmd_name)
+        if not cmd:
+            return False
+
+        player = self.server.players.get_player(login)
+
+        # Allow dedicated server login to act as a synthetic command author.
+        if not player:
+            server_login = getattr(self.server, 'serverlogin', '')
+            if not server_login or login.lower() != server_login.lower():
+                return False
+
+            from pyxaseco.models import Player
+
+            player = Player({
+                'Login': login,
+                'NickName': login,
+                'IPAddress': '',
+                'IsSpectator': False,
+                'IsInOfficialMode': False,
+                'LadderStats': {'TeamName': '', 'PlayerRankings': [{}]},
+                'Path': 'World|Server',
+                'ClientVersion': '',
+                'OnlineRights': 0,
+                'Avatar': {},
+                'TeamId': 0,
+            })
+
+        command = {
+            'author': player,
+            'params': cmd_args,
+        }
+
+        # Fire the chat command event
+        event_name = 'onChat_' + cmd_name
+        if self.events.has_handlers(event_name):
+            await self.release_event(event_name, command)
+        else:
+
+            handler_name = 'chat_' + cmd_name
+            await self.release_event('onChatCommand', {
+                'name': cmd_name,
+                'handler': handler_name,
+                'command': command,
+            })
+        return True

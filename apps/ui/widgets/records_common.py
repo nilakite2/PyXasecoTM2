@@ -1,0 +1,396 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+from pyxaseco.helpers import format_time
+from apps.platform_ui.record_layout import record_columns, fitted_size
+
+from ..config import WidgetCfg, StyleCfg, _state
+from ..internal.utils import _handle_special_chars, _safe_ml_text
+
+if TYPE_CHECKING:
+    from pyxaseco.core.aseco import Aseco
+
+
+ENTRY_OFFSET = 3.0
+ML_DEDI = 91811  # Shared external-provider slot, not owned by Dedimania.
+ML_WINDOW = 91800
+ML_SUBWIN = 91801
+
+
+def _digest_entries(entries: list, login: str) -> str:
+    return str(hash(str((login, [(e.get('rank'), e.get('login'), e.get('score'), e.get('self'))
+                                for e in entries]))))
+
+
+def _same_login(left: str, right: str) -> bool:
+    return str(left or '').strip().lower() == str(right or '').strip().lower()
+
+
+def _dedi_close_to_you(recs, login, limit, topcount, player_nick=None, include_no_record=True):
+    """Shared provider row selection; preserve the established Classic/Modern layout."""
+    if limit <= 0:
+        return []
+    topcount = max(0, min(topcount, limit))
+    better, worse, self_row = [], [], None
+    before_self = True
+    for index, record in enumerate(recs):
+        if not isinstance(record, dict):
+            continue
+        rec_login = str(record.get('login') or record.get('Login') or '')
+        entry = {'rank': int(record.get('rank') or index + 1), 'login': rec_login,
+                 'nickname': str(record.get('nickname') or record.get('NickName') or rec_login or '?'),
+                 'score': record.get('score'), 'self': -1, 'highlitefull': False}
+        if _same_login(rec_login, login):
+            self_row, before_self = entry, False
+        elif before_self:
+            better.append(entry)
+        else:
+            entry['self'] = 1
+            worse.append(entry)
+    pinned = better[:topcount] if len(better) > topcount else []
+    if pinned:
+        better = better[topcount:]
+    remaining = limit - len(pinned)
+    if self_row is None:
+        if not include_no_record:
+            return (pinned + (better[-remaining:] if remaining else []))[:limit]
+        placeholder = {'rank': '--', 'login': login, 'nickname': player_nick or login,
+                       'score': None, 'self': 0, 'highlitefull': False}
+        return (pinned + (better[-(remaining - 1):] if remaining > 1 else []) + [placeholder])[:limit]
+    selected = [dict(self_row, self=0)]
+    index = 0
+    while len(selected) < remaining and (index < len(better) or index < len(worse)):
+        if index < len(better):
+            selected.insert(0, dict(better[-1 - index], self=-1))
+        if len(selected) < remaining and index < len(worse):
+            selected.append(dict(worse[index], self=1))
+        index += 1
+    result = pinned + selected
+    for index, row in enumerate(result):
+        if row['self'] == 0:
+            row['highlitefull'] = index >= topcount
+    return result[:limit]
+
+
+def _build_online_marker(
+    line: int,
+    self_flag: int,
+    topcount: int,
+    behind_player: bool,
+    w: float,
+    line_h: float,
+    st: StyleCfg,
+) -> str:
+    """
+    Port of re_getConnectedPlayerRecord().
+
+    Adds a highlight background + side markers for an online player's record row.
+    behind_player: True if this online player is ranked BELOW the viewing player.
+    """
+    yp = line_h * line + 2.7
+    ypm = line_h * line + 2.8
+
+    parts = []
+
+    # Row background (only for non-top entries)
+    if (line + 1) > topcount:
+        parts.append(
+            f'<quad posn="0.4 -{yp:.4f} 0.003"'
+            f' sizen="{w - 0.8:.4f} 2"'
+            f' style="{st.hi_other_style}" substyle="{st.hi_other_sub}"/>'
+        )
+
+    # Left side tab
+    parts.append(
+        f'<quad posn="-1.9 -{yp:.4f} 0.003"'
+        f' sizen="2 2"'
+        f' style="{st.hi_other_style}" substyle="{st.hi_other_sub}"/>'
+    )
+
+    # Right side tab
+    parts.append(
+        f'<quad posn="{w - 0.1:.4f} -{yp:.4f} 0.003"'
+        f' sizen="2 2"'
+        f' style="{st.hi_other_style}" substyle="{st.hi_other_sub}"/>'
+    )
+
+    # Marker icon: ChallengeAuthor if ABOVE player, Solo if BELOW
+    icon_sub = 'Solo' if behind_player else 'ChallengeAuthor'
+
+    # Left marker
+    parts.append(
+        f'<quad posn="-1.8 -{ypm:.4f} 0.004"'
+        f' sizen="1.8 1.8"'
+        f' style="Icons128x128_1" substyle="{icon_sub}"/>'
+    )
+
+    # Right marker
+    parts.append(
+        f'<quad posn="{w + 0.1:.4f} -{ypm:.4f} 0.004"'
+        f' sizen="1.8 1.8"'
+        f' style="Icons128x128_1" substyle="{icon_sub}"/>'
+    )
+
+    return ''.join(parts)
+
+
+def _build_record_widget(
+    *,
+    ml_id: int,
+    cfg: WidgetCfg,
+    login: str,
+    entries: list,
+    online: set,
+    mode: int,
+    is_live: bool = False,
+    click_action: int | None = None,
+    aseco=None,
+) -> str:
+    """
+    Builds the full ManiaLink XML for a record widget.
+    """
+    aseco = aseco or getattr(_state, 'aseco', None)
+    if aseco is not None:
+        lookup = getattr(aseco, 'get_service', None)
+        service = lookup('ui/uistyle') if callable(lookup) else None
+        renderer = getattr(service, 'record_widget_xml', None)
+        if callable(renderer):
+            player = aseco.server.players.get_player(login)
+            xml = renderer(player, ml_id=ml_id, cfg=cfg, login=login,
+                           entries=[{**e, 'nickname': _handle_special_chars(e.get('nickname', ''))} for e in entries],
+                           online=online, mode=mode, is_live=is_live, mark_online=_state.mark_online and not is_live,
+                           click_action=click_action if click_action is not None else 382009003)
+            if xml is not None:
+                return xml
+    st = _state.style
+    w = cfg.width
+    mp = bool(getattr(aseco, 'is_maniaplanet', False))
+    def score_text(entry):
+        value = entry.get('score')
+        if value is None:
+            return '--'
+        if is_live or isinstance(value, str) or mode == 4:
+            return str(value)
+        return aseco.format_time(int(value)) if mp else format_time(int(value))
+    columns = record_columns(w,
+        [f"{entry.get('rank')}." for entry in entries if entry.get('rank') is not False],
+        [score_text(entry) for entry in entries]) if mp else None
+
+    line_h = max(1.0, getattr(cfg, 'row_height', _state.line_height))
+    widget_h = getattr(cfg, 'height', 0.0) or (line_h * cfg.entries + 3.3)
+    col_h = widget_h - 3.1
+    col_name_w = w - 6.45
+
+    side = 'right' if cfg.pos_x < 0 else 'left'
+    w_off = w - 15.5
+    if side == 'right':
+        icon_x = 12.5 + w_off
+        title_x = 12.4 + w_off
+        halign = 'right'
+    else:
+        icon_x = 0.6
+        title_x = 3.2
+        halign = 'left'
+    icon_y = 0.0
+    title_y = -0.55
+
+    p: list[str] = []
+
+    panel_action = click_action if click_action is not None else 382009003
+    bg_attrs = (
+        f'bgcolor="{_safe_ml_text(cfg.bg_color)}"'
+        if getattr(cfg, 'bg_color', '')
+        else f'style="{st.bg_style}" substyle="{st.bg_substyle}"'
+    )
+
+    # HEADER
+    p.append(f'<manialink id="{ml_id}">')
+    p.append(f'<frame posn="{cfg.pos_x:.4f} {cfg.pos_y:.4f} 0">')
+
+    # Main background quad
+    p.append(
+        f'<quad posn="0 0 0.001" sizen="{w:.4f} {widget_h:.4f}"'
+        f' action="{panel_action}"'
+        f' {bg_attrs}'
+        f'/>'
+    )
+
+    # Column backgrounds
+    p.append(
+        f'<quad posn="0.4 -2.6 0.002" sizen="{columns["rank_width"] if columns else 2:.4f} {col_h:.4f}"'
+        f' bgcolor="{st.col_bg_rank}"/>'
+    )
+    p.append(
+        f'<quad posn="{columns["score_left"] if columns else 2.4:.4f} -2.6 0.002" sizen="{columns["score_width"] if columns else 3.65:.4f} {col_h:.4f}"'
+        f' bgcolor="{st.col_bg_score}"/>'
+    )
+    p.append(
+        f'<quad posn="{columns["name_x"] if columns else 6.05:.4f} -2.6 0.002" sizen="{columns["name_width"] if columns else col_name_w:.4f} {col_h:.4f}"'
+        f' bgcolor="{st.col_bg_name}"/>'
+    )
+
+    # Title bar
+    p.append(
+        f'<quad posn="0.4 -0.36 0.002" sizen="{w - 0.8:.4f} 2"'
+        f' style="{st.title_style}" substyle="{st.title_sub}"/>'
+    )
+
+    # Icon
+    p.append(
+        f'<quad posn="{icon_x:.4f} {icon_y:.4f} 0.004" sizen="2.5 2.5"'
+        f' style="{cfg.icon_style}" substyle="{cfg.icon_substyle}"/>'
+    )
+
+    # Title label
+    p.append(
+        f'<label posn="{title_x:.4f} {title_y:.4f} 0.004"'
+        f' sizen="10.2 0" halign="{halign}" textsize="1"'
+        f' text="{cfg.title}"/>'
+    )
+
+    # Format tag
+    p.append(f'<format textsize="1" textcolor="{st.col_default}"/>')
+
+    # Top-N background quad
+    if cfg.topcount > 0:
+        top_bg_h = cfg.topcount * line_h + 0.3
+        p.append(
+            f'<quad posn="0.4 -2.6 0.003" sizen="{w - 0.8:.4f} {top_bg_h:.4f}"'
+            f' style="{st.top_style}" substyle="{st.top_sub}"/>'
+        )
+
+    behind_player = False
+
+    for line, entry in enumerate(entries):
+        rank = entry.get('rank')
+        nick = entry.get('nickname', '')
+        score_raw = entry.get('score')
+        self_flag = entry.get('self', -1)
+        hi_full = entry.get('highlitefull', False)
+        ent_login = entry.get('login', '')
+
+        if self_flag == 0:
+            behind_player = True
+
+        # Format score string
+        if is_live or isinstance(score_raw, str):
+            score_str = str(score_raw) if score_raw is not None else '--'
+        elif score_raw is None:
+            score_str = '--'
+        elif mode == 4:  # STNT
+            score_str = str(score_raw)
+        else:
+            score_str = score_text(entry)
+
+        nick_clean = _handle_special_chars(nick)
+
+        # Online marker for OTHER players
+        if (_state.mark_online and ent_login and ent_login != login
+                and ent_login in online and not is_live):
+            p.append(_build_online_marker(
+                line=line,
+                self_flag=self_flag,
+                topcount=cfg.topcount,
+                behind_player=behind_player,
+                w=w,
+                line_h=line_h,
+                st=st,
+            ))
+
+        # Colors / highlight
+        if self_flag == -1:
+            if isinstance(rank, int) and rank < cfg.topcount + 1:
+                textcolor = st.col_top
+            else:
+                textcolor = st.col_better
+        elif self_flag == 1:
+            if isinstance(rank, int) and rank < cfg.topcount + 1:
+                textcolor = st.col_top
+            else:
+                textcolor = st.col_worse
+        else:
+            textcolor = st.col_self
+
+            # Full-row highlight if self is in topcount
+            if hi_full:
+                yp = line_h * line + ENTRY_OFFSET - 0.3
+                p.append(
+                    f'<quad posn="0.4 -{yp:.4f} 0.003"'
+                    f' sizen="{w - 0.8:.4f} 2"'
+                    f' style="{st.hi_style}" substyle="{st.hi_sub}"/>'
+                )
+
+            # Side-tab highlights + arrows
+            if rank is not False and rank != '--':
+                yp = line_h * line + ENTRY_OFFSET - 0.3
+                ypa = line_h * line + ENTRY_OFFSET - 0.1
+
+                p.append(
+                    f'<quad posn="-1.9 -{yp:.4f} 0.003"'
+                    f' sizen="2 2"'
+                    f' style="{st.hi_style}" substyle="{st.hi_sub}"/>'
+                )
+                p.append(
+                    f'<quad posn="-1.7 -{ypa:.4f} 0.004"'
+                    f' sizen="1.6 1.6"'
+                    f' style="Icons64x64_1" substyle="ArrowNext"/>'
+                )
+                p.append(
+                    f'<quad posn="{w - 0.1:.4f} -{yp:.4f} 0.003"'
+                    f' sizen="2 2"'
+                    f' style="{st.hi_style}" substyle="{st.hi_sub}"/>'
+                )
+                p.append(
+                    f'<quad posn="{w + 0.1:.4f} -{ypa:.4f} 0.004"'
+                    f' sizen="1.6 1.6"'
+                    f' style="Icons64x64_1" substyle="ArrowPrev"/>'
+                )
+
+        y = line_h * line + ENTRY_OFFSET
+
+        if columns is not None:
+            rank_str = '' if rank is False else ('--' if rank == '--' else f'{rank}.')
+            for text, x, width, color, align, font in (
+                (rank_str, columns['rank_right'], columns['rank_width'], st.col_default, 'right', ''),
+                (score_str, columns['score_left'], columns['score_width'], textcolor, 'left', '$n'),
+            ):
+                p.append(f'<label posn="{x:.4f} -{y:.4f} 0.004" sizen="{width:.4f} 1.7"'
+                         f' halign="{align}" scale="1" textsize="{fitted_size(font + text, width)}" autonewline="0"'
+                         f' textcolor="{color}" text="{font}{_safe_ml_text(st.fmt_codes + text)}"/>')
+            p.append(f'<label posn="{columns["name_x"]:.4f} -{y:.4f} 0.004"'
+                     f' sizen="{columns["name_width"]:.4f} 1.7" scale="1" autonewline="0"'
+                     f' text="{_safe_ml_text(st.fmt_codes + nick_clean)}"/>')
+            continue
+
+        # Rank + score labels
+        if rank is not False:
+            rank_str = f'{rank}.' if rank != '--' else '--'
+            p.append(
+                f'<label posn="2.3 -{y:.4f} 0.004"'
+                f' sizen="1.7 1.7" halign="right" scale="0.9"'
+                f' text="{st.fmt_codes}{rank_str}"/>'
+            )
+            p.append(
+                f'<label posn="5.9 -{y:.4f} 0.004"'
+                f' sizen="3.8 1.7" halign="right" scale="0.9"'
+                f' textcolor="{textcolor}"'
+                f' text="{st.fmt_codes}{score_str}"/>'
+            )
+        else:
+            # Team mode: no rank
+            p.append(
+                f'<label posn="5.9 -{y:.4f} 0.004"'
+                f' sizen="5.3 1.7" halign="right" scale="0.9"'
+                f' textcolor="{st.col_default}"'
+                f' text="{st.fmt_codes}{score_str}"/>'
+            )
+
+        # Name label
+        p.append(
+            f'<label posn="6.1 -{y:.4f} 0.004"'
+            f' sizen="{w - 5.7:.4f} 1.7" scale="0.9"'
+            f' text="{_safe_ml_text(st.fmt_codes + nick_clean)}"/>'
+        )
+
+    p.append('</frame></manialink>')
+    return ''.join(p)

@@ -1,0 +1,446 @@
+"""Per-recipient presentation for existing native ManiaLink surfaces."""
+
+from collections import OrderedDict
+import logging
+import re
+import xml.etree.ElementTree as ET
+
+from .modern import heading_text
+from .hud_layout import BY_PAGE
+from .player_hud import EDITOR, PANEL_PREVIEW
+from pyxaseco.core.widget_delivery import deliver_ui, is_score_phase
+from pyxaseco.helpers import clean_tm_text
+from pyxaseco.maniaplanet_client import CPLIVE_MATCHED_PAGES
+
+
+logger = logging.getLogger(__name__)
+PAGES = re.compile(r'<manialink\b[^>]*?(?:/>|>.*?</manialink>)', re.DOTALL)
+DECLARATION = re.compile(r'<\?xml[^>]*\?>')
+COMPACT_SCORE_IDS = {'9', '91815', '91816', '91831', '91834', '91845', '91846', '91847', '91848'} | {
+    str(i) for i in range(91818, 91827)
+}
+FIXED_HEIGHT = ' pyxaseco:fixed-height '
+SCORE_PREVIEW_PAGE = '8542002'
+_PREVIEW_ROOT = f'<manialink id="{SCORE_PREVIEW_PAGE}">'
+_PREVIEW_KEEP_PAGES = {'0', '1', '7', '91800', '91801', EDITOR, PANEL_PREVIEW, SCORE_PREVIEW_PAGE}
+_PAGE_ID = re.compile(r'\bid=["\']([^"\']+)["\']')
+_CUSTOM_UI = re.compile(r'<custom_ui>.*?</custom_ui>', re.DOTALL)
+_RACE_UI_FLAG = re.compile(r'<(challenge_info|net_infos|checkpoint_list|round_scores|scoretable)\b[^>]*/>')
+REBUILT_RECORD_IDS = {'91811', '91812', '91813'}
+DECORATIVE_SKINS = {('BgsPlayerCard', 'BgRacePlayerLine')}
+OPEN_CORNER = re.compile(
+    r'^https?://maniacdn\.net/undef\.de/xaseco1/(?:mania-karma|records-eyepiece)/'
+    r'edge-open-(ld|rd)-(?:dark|light)\.png$', re.IGNORECASE)
+
+
+def _numbers(value, default):
+    try:
+        return [float(part) for part in value.split()]
+    except (ValueError, AttributeError):
+        return default
+
+
+def _content_depths(parent, offset=0):
+    """Account for nested frames when placing a flat card behind its content."""
+    for node in parent:
+        pos = _numbers(node.get('posn'), [])
+        legacy = _numbers(node.get('pos'), [])
+        depth = offset + (pos[2] if len(pos) == 3 else -64 * legacy[2] if len(legacy) == 3 else 0)
+        if node.tag == 'frame':
+            yield from _content_depths(node, depth)
+        elif node.tag in ('label', 'entry', 'quad'):
+            if node.tag != 'quad' or not node.get('style', '').startswith('Bgs') or node.get('image'):
+                yield depth
+
+
+def _remove_open_indicators(root):
+    """Modern cards need no decorative open-corner images or replacement arrows."""
+    changed = False
+    for parent in root.iter():
+        for node in list(parent):
+            if node.tag != 'quad' or not OPEN_CORNER.fullmatch(node.get('image', '')):
+                continue
+            if any(key in node.attrib for key in ('action', 'url', 'manialink')):
+                node.attrib.pop('image')
+                node.set('bgcolor', '0000')
+            else:
+                parent.remove(node)
+            changed = True
+    return changed
+
+
+def _style_cplive(root, palette, *, maniaplanet=False):
+    """Keep CP Live and matching MP HUD surfaces on the same palette background."""
+    changed = False
+    for page in root.iter('manialink'):
+        identifier = page.get('id')
+        if identifier not in ('1928378', '1928379') and not (
+                maniaplanet and identifier in CPLIVE_MATCHED_PAGES):
+            continue
+        for node in page.iter('quad'):
+            if not node.get('style', '').startswith('Bgs') or node.get('image'):
+                continue
+            node.attrib.pop('style', None)
+            node.attrib.pop('substyle', None)
+            color = '0000' if identifier == '1928379' else palette['header']
+            if page.get('version') == '3' and len(color) in (3, 4):
+                color = ''.join(char * 2 for char in color)
+            node.set('bgcolor', color)
+            changed = True
+    return changed
+
+
+def _style_allbutton(root, palette):
+    changed = False
+    for page in root.iter('manialink'):
+        identifier = page.get('id')
+        if BY_PAGE.get(identifier) != 'allbutton':
+            continue
+        main = identifier == '10'
+        for frame in page.findall('frame'):
+            bar = frame.find("./quad[@style='Bgs1InRace'][@substyle='NavButton']")
+            labels = frame.findall("./label[@style='TextCardSmallScores2Rank'][@action]")
+            if bar is None or not labels:
+                continue
+            pos, size = _numbers(bar.get('posn'), []), _numbers(bar.get('sizen'), [])
+            if len(pos) != 3 or len(size) != 2 or min(size) <= .4:
+                continue
+
+            x, y, z = pos
+            width, height = size
+            inset = .2
+            slot = (width - 2 * inset) / len(labels)
+            if main:
+                slot = min(slot, 3.6)
+            gap = min(.15, slot / 4)
+            bar.attrib.pop('style')
+            bar.attrib.pop('substyle')
+            bar.set('bgcolor', palette['header'])
+            for index, label in enumerate(labels):
+                rightmost = main and index == len(labels) - 1
+                left = x + width - inset - slot if rightmost else x + inset + index * slot
+                left += gap / 2
+                action = {key: label.attrib.pop(key) for key in ('action', 'actionkey') if key in label.attrib}
+                ET.SubElement(
+                    frame, 'quad', posn=f'{left:.4f} {y - inset:.4f} {z + .01:.4f}',
+                    sizen=f'{slot - gap:.4f} {height - 2 * inset:.4f}',
+                    bgcolor=palette['selection' if rightmost else 'row'], **action,
+                )
+                label.attrib.pop('style')
+                label.attrib.update(
+                    posn=f'{left + (slot - gap) / 2:.4f} {y - height / 2:.4f} {z + .02:.4f}',
+                    sizen=f'{slot - gap:.4f} {height - 2 * inset:.4f}', halign='center', valign='center',
+                    textsize='1', scale='.8' if main else '.75', autonewline='0',
+                    textcolor=palette['text'], text=clean_tm_text(label.get('text', ''), keep_colors=False),
+                )
+            changed = True
+    return changed
+
+
+def _normalise_headers(root, palette):
+    changed = False
+    for frame in root.iter('frame'):
+        children = list(frame)
+        for bar in children:
+            size = _numbers(bar.get('sizen'), [])
+            pos = _numbers(bar.get('posn'), [])
+            if bar.tag != 'quad' or bar.get('bgcolor') != palette['header'] or len(size) != 2 or len(pos) != 3:
+                continue
+            large = size[0] > 40 and 2.8 <= size[1] <= 3.2 and -1.4 <= pos[1] <= -1.2
+            small = size[0] >= 8 and 1.9 <= size[1] <= 2.6 and -.8 <= pos[1] <= 0
+            if not (large or small):
+                continue
+            titles = [node for node in children if node.tag == 'label'
+                      and len(_numbers(node.get('posn'), [])) == 3
+                      and (-2.1 <= _numbers(node.get('posn'), [0, 0, 0])[1] <= -1.6 if large else
+                           -.8 <= _numbers(node.get('posn'), [0, 0, 0])[1] <= -.35)
+                      and (not large or node.get('halign', 'left') != 'right')]
+            if not titles:
+                continue
+            title = titles[0]
+            before = dict(title.attrib)
+            title.set('text', heading_text(title.get('text', '')))
+            title.set('textsize', '1')
+            title.set('scale', '1' if large else '0.9')
+            title.attrib.pop('style', None)
+            if small:
+                width = size[0] + (.8 if pos[0] > .1 else 0)
+                icons = [node for node in children if node.tag == 'quad'
+                         and (node.get('style') or node.get('image'))
+                         and len(_numbers(node.get('sizen'), [])) == 2
+                         and max(_numbers(node.get('sizen'), [99, 99])) <= 4
+                         and len(_numbers(node.get('posn'), [])) == 3
+                         and -.3 <= _numbers(node.get('posn'), [0, -99, 0])[1] <= .1]
+                title_x = 3.2 if icons else .65
+                title_pos = _numbers(title.get('posn'), [0, 0, 0])
+                title.set('posn', f'{title_x:.4f} -0.6000 {title_pos[2]:.4f}')
+                title.set('sizen', f'{max(0, width - title_x - .6):.4f} 1.5000')
+                title.set('halign', 'left')
+                old_bar = dict(bar.attrib)
+                bar.set('posn', f'0.0000 0.0000 {pos[2]:.4f}')
+                bar.set('sizen', f'{width:.4f} 2.5500')
+                changed |= old_bar != bar.attrib
+                if icons:
+                    icon = icons[0]
+                    old_icon = dict(icon.attrib)
+                    icon_pos = _numbers(icon.get('posn'), [0, 0, 0])
+                    icon.set('posn', f'0.6000 -0.1500 {icon_pos[2]:.4f}')
+                    icon.set('sizen', '2.3000 2.3000')
+                    changed |= old_icon != icon.attrib
+            changed |= before != title.attrib
+    return changed
+
+
+def _compact_score(page, palette):
+    if page.get('id') not in COMPACT_SCORE_IDS:
+        return
+    fixed_height = any(node.tag is ET.Comment and node.text == FIXED_HEIGHT for node in page)
+    for frame in page.iter('frame'):
+        labels = [node for node in frame if node.tag == 'label' and node.get('text')]
+        rows = sorted({round(-_numbers(node.get('posn'), [0, 0, 0])[1], 4)
+                       for node in labels if len(_numbers(node.get('posn'), [])) == 3
+                       and _numbers(node.get('posn'), [0, 0, 0])[1] <= -2.9})
+        if not rows:
+            continue
+        step = min((b - a for a, b in zip(rows, rows[1:]) if b - a > .5), default=1.8)
+        bottom = rows[-1] + step
+        for node in frame:
+            size = _numbers(node.get('sizen'), [])
+            pos = _numbers(node.get('posn', '0 0 0'), [])
+            if (not fixed_height and node.tag == 'quad' and len(size) == 2 and len(pos) == 3
+                    and (size[0] >= 10 or (size[0] <= .2 and node.get('bgcolor') == palette['accent']))
+                    and size[1] > bottom and pos[1] >= -.1):
+                node.set('sizen', f'{size[0]:.4f} {bottom:.4f}')
+        for index, y in enumerate(rows):
+            backgrounds = [node for node in frame if node.tag == 'quad'
+                           and len(_numbers(node.get('sizen'), [])) == 2
+                           and _numbers(node.get('sizen'), [0, 0])[0] >= 10]
+            if not backgrounds:
+                break
+            width = max(_numbers(node.get('sizen'), [0, 0])[0] for node in backgrounds)
+            frame.append(ET.Element('quad', posn=f'0.35 {-y + .25:.4f} 0.0015',
+                                    sizen=f'{max(0, width - .7):.4f} {step:.4f}',
+                                    bgcolor=palette['row_alt' if index % 2 else 'row']))
+
+
+def style_xml(xml, palette, *, maniaplanet=False):
+    """Apply Modern styling while preserving content, inputs and actions."""
+    if '<quad' not in xml or '<!DOCTYPE' in xml.upper():
+        return xml
+    try:
+        parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True)) if FIXED_HEIGHT in xml else None
+        root = ET.fromstring('<ui>' + DECLARATION.sub('', xml) + '</ui>', parser=parser)
+    except ET.ParseError:
+        logger.warning('[UIStyle] Could not parse a UI page; preserving its original markup')
+        return xml
+    changed = _remove_open_indicators(root)
+    changed |= _style_cplive(root, palette, maniaplanet=maniaplanet)
+    changed |= _style_allbutton(root, palette)
+    native = {node for page in root.iter('manialink') if page.get('version') == '3'
+              for node in page.iter()}
+    for parent in root.iter():
+        if parent in native:
+            continue
+        seen = set()
+        accent_added = False
+        backdrop_depth = None
+        for node in list(parent):
+            if node.tag in ('label', 'format', 'entry'):
+                color = node.get('textcolor', '').upper()
+                if color[:3] in ('000', '333', 'FFF') and len(color) in (3, 4):
+                    node.set('textcolor', palette['text'])
+                    changed = True
+            if node.tag != 'quad' or node.get('image'):
+                continue
+            skin = node.get('style', '')
+            if (skin, node.get('substyle')) in DECORATIVE_SKINS:
+                continue
+            size = _numbers(node.get('sizen'), [])
+            pos = _numbers(node.get('posn', '0 0 0'), [0, 0, 0])
+            if (node.get('bgcolor', '').upper() == '3336' and size == [78.4, 53.7]
+                    and pos[:2] == [.8, -.8]):
+                # The shared legacy window repeats this overlay above its card.
+                parent.remove(node)
+                changed = True
+                continue
+            if skin.startswith('Bgs'):
+                role = 'background'
+                if 'action' in node.attrib and (len(size) != 2 or size[1] <= 4):
+                    role = 'selection'
+                elif len(size) == 2 and size[1] <= 2.6:
+                    role = 'header' if len(pos) == 3 and pos[1] > -2 else 'row'
+                if (role == 'background' and len(size) == 2 and size[0] >= 10 and size[1] >= 3
+                        and len(pos) == 3 and 'pos' not in node.attrib):
+                    # Border skins can sit above icons; a filled replacement cannot.
+                    if backdrop_depth is None:
+                        backdrop_depth = min(_content_depths(parent), default=pos[2]) - .001
+                    pos[2] = min(pos[2], backdrop_depth)
+                    node.set('posn', ' '.join(f'{value:.4f}' for value in pos))
+                node.attrib.pop('style', None)
+                node.attrib.pop('substyle', None)
+                node.set('bgcolor', palette[role])
+                changed = True
+                if not accent_added and len(size) == 2 and len(pos) == 3 and size[0] >= 10 and size[1] >= 3:
+                    parent.append(ET.Element('quad', posn=f'{pos[0]:.4f} {pos[1]:.4f} {pos[2] + .0005:.4f}',
+                                             sizen=f'0.14 {size[1]:.4f}', bgcolor=palette['accent']))
+                    accent_added = True
+                # Repeated legacy backdrop layers would otherwise compound opacity.
+                identity = tuple(sorted(node.attrib.items()))
+                if identity in seen:
+                    parent.remove(node)
+                seen.add(identity)
+            elif (node.get('bgcolor', '').upper() in ('3336', '29F9')
+                  and len(size) == 2 and size[0] > 70 and len(pos) == 3 and pos[0] == .8):
+                role = 'header' if node.get('bgcolor', '').upper() == '29F9' else 'background'
+                node.set('bgcolor', palette[role])
+                changed = True
+    changed |= _normalise_headers(root, palette)
+    for page in root.iter('manialink'):
+        if page.get('version') != '3' and page.get('id') in COMPACT_SCORE_IDS:
+            _compact_score(page, palette)
+            for marker in list(page):
+                if marker.tag is ET.Comment and marker.text == FIXED_HEIGHT:
+                    page.remove(marker)
+            changed = True
+    return ''.join(ET.tostring(child, encoding='unicode') for child in root) if changed else xml
+
+
+class Presentation:
+    def __init__(self, service):
+        self.service = service
+        self.sources = OrderedDict()
+        self.race_sources = set()
+        self.source_bytes = 0
+        self.cache = OrderedDict()
+        self.cache_bytes = 0
+        self.score_preview_logins = set()
+
+    def _mask_race_ui(self, xml, *, persistent):
+        def clear_widget(match):
+            fragment = match.group()
+            page = _PAGE_ID.search(fragment)
+            if page and page[1] not in _PREVIEW_KEEP_PAGES and (persistent or page[1] in BY_PAGE):
+                return f'<manialink id="{page[1]}"></manialink>'
+            return fragment
+
+        xml = PAGES.sub(clear_widget, xml)
+        return _CUSTOM_UI.sub(
+            lambda match: _RACE_UI_FLAG.sub(r'<\1 visible="false"/>', match.group()), xml)
+
+    async def hide_race_for_preview(self, player):
+        if player.login in self.score_preview_logins:
+            return
+        self.score_preview_logins.add(player.login)
+        keys = (BY_PAGE.keys() | {page for login, page in self.sources if login == player.login}) - _PREVIEW_KEEP_PAGES
+        if keys:
+            aseco = self.service.aseco
+            clear = ''.join(f'<manialink id="{page}"></manialink>' for page in sorted(keys))
+            # This is a temporary mask; keep the remembered sources for restoration.
+            await deliver_ui(aseco, 'SendDisplayManialinkPageToLogin', player.login,
+                             '<manialinks>' + clear + '</manialinks>', 0, False, remember=False)
+
+    async def restore_race_after_preview(self, player):
+        self.score_preview_logins.discard(player.login)
+        await self.refresh(player, include_record_widgets=True)
+
+    def groups(self, method, *args):
+        if method not in ('SendDisplayManialinkPage', 'SendDisplayManialinkPageToLogin'):
+            return None
+        targeted = method.endswith('ToLogin')
+        xml, lifetime, hide = args[1:] if targeted else args
+        players = self.service.aseco.server.players
+        recipients = args[0].split(',') if targeted else [p.login for p in players.all()]
+        hud = getattr(self.service, 'hud', None) if not lifetime and not hide and not is_score_phase(self.service.aseco) else None
+        groups = {}
+        for login in recipients:
+            player = players.get_player(login)
+            preset = self.service.resolve(player) if player is not None else None
+            output = xml
+            if login in self.score_preview_logins and not is_score_phase(self.service.aseco):
+                output = self._mask_race_ui(output, persistent=not lifetime and not hide)
+            if (preset is not None and preset.base == 1 and not output.startswith(_PREVIEW_ROOT)
+                    and not (preset.window is not None and re.search(r'<manialink\s+id=["\']1["\']', output))):
+                key = (preset.id, tuple(sorted(preset.palette.items())), output)
+                output = self.cache.get(key)
+                if output is None:
+                    output = style_xml(key[2], preset.palette,
+                                       maniaplanet=getattr(self.service.aseco, 'is_maniaplanet', False) is True)
+                    cost = len(key[2].encode('utf-8')) + len(output.encode('utf-8'))
+                    if cost <= 2_000_000:
+                        self.cache[key] = output
+                        self.cache_bytes += cost
+                        while len(self.cache) > 128 or self.cache_bytes > 2_000_000:
+                            old_key, old_xml = self.cache.popitem(last=False)
+                            self.cache_bytes -= len(old_key[2].encode('utf-8')) + len(old_xml.encode('utf-8'))
+                else:
+                    self.cache.move_to_end(key)
+            if preset is not None and preset.renderer:
+                output = self.service.transform_xml(player, output)
+            if preset is not None and hud is not None:
+                output = hud.transform(player, preset, output)
+            groups.setdefault(output, []).append(login)
+        if not groups or (len(groups) == 1 and next(iter(groups)) == xml):
+            return None
+        return [('SendDisplayManialinkPageToLogin', (','.join(logins[start:start + 100]), output, lifetime, hide))
+                for output, logins in groups.items() for start in range(0, len(logins), 100)]
+
+    def remember(self, method, *args):
+        targeted = method.endswith('ToLogin')
+        xml, lifetime, hide = args[1:] if targeted else args
+        players = self.service.aseco.server.players
+        recipients = args[0].split(',') if targeted else [p.login for p in players.all()]
+        if lifetime or hide:
+            for fragment in PAGES.findall(xml):
+                match = re.search(r'\bid=["\']([^"\']+)["\']', fragment)
+                if match:
+                    for login in recipients:
+                        self._forget((login, match[1]))
+        if lifetime or hide:
+            return
+        race = not is_score_phase(self.service.aseco)
+        for fragment in PAGES.findall(xml):
+            match = re.search(r'\bid=["\']([^"\']+)["\']', fragment)
+            if not match or match[1] in ('0', '1', '91800', '91801', EDITOR, PANEL_PREVIEW, SCORE_PREVIEW_PAGE):
+                continue
+            for login in recipients:
+                self._forget((login, match[1]))
+                self.sources[(login, match[1])] = fragment
+                if race and match[1] in BY_PAGE:
+                    self.race_sources.add((login, match[1]))
+                self.source_bytes += len(fragment.encode('utf-8'))
+                self.sources.move_to_end((login, match[1]))
+        while len(self.sources) > 4096 or self.source_bytes > 4_000_000:
+            key, fragment = self.sources.popitem(last=False)
+            self.race_sources.discard(key)
+            self.source_bytes -= len(fragment.encode('utf-8'))
+
+    def _forget(self, key):
+        self.race_sources.discard(key)
+        fragment = self.sources.pop(key, None)
+        if fragment is not None:
+            self.source_bytes -= len(fragment.encode('utf-8'))
+
+    def discard(self, login):
+        self.score_preview_logins.discard(login)
+        for key in list(self.sources):
+            if key[0] == login:
+                self._forget(key)
+
+    async def refresh(self, player, *, pages=None, include_record_widgets=False):
+        from pyxaseco.core.widget_delivery import deliver_ui
+        # Style changes rebuild record widgets from data. HUD edits replay the
+        # current race source so a hide/show never has to query for records.
+        keys = [key for key in self.sources if key[0] == player.login
+                and ((key[1] not in _PREVIEW_KEEP_PAGES if include_record_widgets else key[1] not in REBUILT_RECORD_IDS)
+                     if pages is None else
+                     key[1] in pages and key in self.race_sources)]
+        generation = getattr(self.service.aseco, '_map_generation', None)
+        for key in keys:
+            if not self.service.connected(player):
+                break
+            if pages is not None and (is_score_phase(self.service.aseco) or
+                    getattr(self.service.aseco, '_map_generation', None) != generation):
+                break
+            xml = self.sources.get(key)
+            if xml is not None and (pages is None or key in self.race_sources):
+                await deliver_ui(self.service.aseco, 'SendDisplayManialinkPageToLogin', player.login, xml, 0, False)

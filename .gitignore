@@ -1,0 +1,49 @@
+# Local credentials and environments
+.env
+.env.*
+!.env.example
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Controller state and server data
+.pyxaseco-data/
+.management-maintenance/
+.server-cleanup/
+logs/
+ErrorLogs/
+Replays/
+*.log
+*.lock
+*.bak
+*.tmp
+*.part
+*.sqlite3*
+/trackhist.txt
+/blacklist.txt
+/guestlist.txt
+/installation.json
+/apps/ui/player_huds/
+/map_imports/*
+!/map_imports/README.md
+
+# Keep only dedicated-server examples
+/UserData/*
+!/UserData/Scripts/
+/UserData/Scripts/*
+!/UserData/Scripts/PyXaseco_TimeAttack.Script.txt
+!/UserData/Maps/
+/UserData/Maps/*
+!/UserData/Maps/MatchSettings/
+/UserData/Maps/MatchSettings/*
+!/UserData/Maps/MatchSettings/MatchSettings.example.txt
+
+# Generated release artifacts
+/*.zip
+/*.zip.sha256
+/catalogue.json
+/MP_BASELINE.diff
