@@ -10,6 +10,8 @@ from pathlib import Path
 from uuid import uuid4
 import zipfile
 
+from pyxaseco import PRODUCT_NAME
+
 from .config_backup import backup_app_defaults
 from .config_store import ManagementError, instance_lock, maintenance_area, revision
 from .credentials import protect_token
@@ -44,7 +46,7 @@ class FileUpdates:
             version(entry.get('version'))
             for name, item in entry['files'].items():
                 package_path(name, {'id': identity, 'kind': 'controller' if identity == 'controller' else 'app',
-                                   'filename': 'local-history'})
+                                   'filename': f"{PRODUCT_NAME}_v{entry['version']}.zip"})
                 if (not isinstance(item, dict) or not isinstance(item.get('sha256'), str)
                         or not re.fullmatch('[0-9a-f]{64}', item['sha256'])
                         or type(item.get('size')) is not int or not 0 <= item['size'] <= FILE_LIMIT):
@@ -62,6 +64,29 @@ class FileUpdates:
                 and (not (name.startswith('apps/') and name.split('/')[1] in MANAGEABLE_STANDALONE_APPS)
                      or name.split('/')[1] in installed)}
 
+    def matches_release(self, package, previous):
+        selected = self._selected(package, package['files'])
+        names = selected.keys() | self._selected(package, previous).keys()
+        return all(_hash(_bytes(self.root / name)) == selected.get(name, {}).get('sha256')
+                   for name in sorted(names) if not configuration_file(name))
+
+    def _previous(self, package, ledger):
+        entries = ledger['packages']
+        identity = package['id']
+        previous = entries.get(identity, {}).get('files', package.get('baseline', {}).get('files', {}))
+        if package.get('filename'):
+            if package['kind'] == 'controller':
+                for name, entry in entries.items():
+                    if name != 'controller':
+                        previous = {**previous, **entry['files']}
+            elif identity not in entries:
+                prefix = 'apps/' + identity + '/'
+                previous = {**previous, **{name: data for name, data in
+                    entries.get('controller', {}).get('files', {}).items() if name.startswith(prefix)}}
+        if package['kind'] == 'app' and not safe_path(self.root / 'apps' / identity / 'app.py').is_file():
+            return {}
+        return self._selected(package, previous)
+
     def preview(self, package, blob, *, force=False):
         validate_archive(blob, package)
         with zipfile.ZipFile(io.BytesIO(blob)) as archive:
@@ -78,20 +103,7 @@ class FileUpdates:
                     except (ValueError, UnicodeError) as error:
                         raise ManagementError('Invalid TOML configuration in release: ' + name) from error
         ledger, raw = self._ledger()
-        previous = ledger['packages'].get(package['id'], {}).get('files', package.get('baseline', {}).get('files', {}))
-        if package.get('filename'):
-            if package['kind'] == 'controller':
-                for identity, entry in ledger['packages'].items():
-                    if identity != 'controller':
-                        previous = {**previous, **entry['files']}
-            elif package['id'] not in ledger['packages']:
-                prefix = 'apps/' + package['id'] + '/'
-                previous = {**previous, **{name: data for name, data in
-                    ledger['packages'].get('controller', {}).get('files', {}).items() if name.startswith(prefix)}}
-        if (package['kind'] == 'app'
-                and not safe_path(self.root / 'apps' / package['id'] / 'app.py').is_file()):
-            previous = {}
-        previous = self._selected(package, previous)
+        previous = self._previous(package, ledger)
         selected = self._selected(package, package['files'])
         rows, snapshots = [], {self.ledger: _hash(raw)}
         for name in sorted(set(selected) | set(previous)):
@@ -103,6 +115,7 @@ class FileUpdates:
             snapshots[name] = before
             target = selected.get(name)
             old = previous.get(name)
+            reason = ''
             if target is None and configuration_file(name):
                 action = 'preserve_config'
             elif target is not None and before == target['sha256']:
@@ -117,8 +130,10 @@ class FileUpdates:
                 action = 'replace' if target else 'remove'
             else:
                 action = 'force_replace' if force and target else 'force_remove' if force else 'keep_modified'
+                reason = ('Local file missing' if current is None else
+                          'No approved earlier copy' if old is None else 'Differs from approved earlier copy')
             rows.append({'file': name, 'action': action, 'before': before,
-                         'after': target['sha256'] if target else None})
+                         'after': target['sha256'] if target else None, 'reason': reason})
         loadout_name = 'apps.mp.toml' if package.get('filename', '').startswith('PyXasecoMP_v') else 'apps.toml'
         loadout = _bytes(safe_path(self.root / loadout_name)) if package['kind'] == 'app' else None
         if package['kind'] == 'app':
@@ -189,12 +204,17 @@ class FileUpdates:
                     changes[loadout_name] = edit_toml(text, ('loadout', 'disabled'), disabled + [entry]).encode()
                     if original is not None:
                         _write(folder / 'before' / loadout_name, original, private=True)
+            inventory = {name: package['files'][name] for name in incoming}
+            # Keep the last approved hash of a skipped removal so it remains visible on recheck.
+            previous = self._previous(package, ledger)
+            inventory.update({row['file']: previous[row['file']] for row in plan['files']
+                              if row['action'] == 'keep_modified' and row['after'] is None})
             ledger['packages'][package['id']] = {'version': package['version'], 'sha256': package['sha256'],
-                                                'files': {name: package['files'][name] for name in incoming}}
+                                                'files': inventory}
             if package['kind'] == 'controller' and package.get('filename'):
                 from .app_policy import MANAGEABLE_STANDALONE_APPS
                 for app in MANAGEABLE_STANDALONE_APPS:
-                    files = {name: package['files'][name] for name in incoming if name.startswith('apps/' + app + '/')}
+                    files = {name: item for name, item in inventory.items() if name.startswith('apps/' + app + '/')}
                     if files:
                         ledger['packages'][app] = {'version': package['version'], 'sha256': package['sha256'], 'files': files}
             changes[self.ledger] = (json.dumps(ledger, indent=2) + '\n').encode()

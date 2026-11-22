@@ -471,7 +471,7 @@ class AppsManagerService:
                 return
             if install:
                 self.restart_needed = self.restart_needed or data['restart_required']
-                self.package_states[data['package']] = 'installed'
+                self.package_states[data['package']] = 'local_changes' if data['kept_modified'] else 'installed'
                 if data['restart_required']:
                     self.pending_packages.add(data['package'])
                 logger.info('[Updates] Copied %s files; report: %s', data['copied'], data['report'])
