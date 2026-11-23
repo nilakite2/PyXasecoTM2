@@ -74,8 +74,8 @@ class TmxApp(App):
             await component.shutdown(context)
 
     def _components_for(self, aseco):
-        # Legacy tracklist/video surfaces depend on the still-unported Eyepiece.
-        return self.components[:1] if getattr(aseco, 'is_maniaplanet', False) else self.components
+        # The legacy Tracklist is separate from the shared GPS command window.
+        return (self.components[0], self.components[2]) if getattr(aseco, 'is_maniaplanet', False) else self.components
 
 
 class TmxModuleSurface(Component):

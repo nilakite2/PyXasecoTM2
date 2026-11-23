@@ -11,11 +11,16 @@ or in a multi-page ManiaLink window.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from typing import TYPE_CHECKING
+from urllib.parse import urlencode
 
+from pyxaseco import BUILD_LABEL, PRODUCT_NAME
 from pyxaseco.helpers import display_manialink, display_manialink_multi
 from pyxaseco.app_services import get_tmx_service
+
+from . import maniaplanet as mx
 
 if TYPE_CHECKING:
     from pyxaseco.core.aseco import Aseco
@@ -23,6 +28,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 PLUGIN_VERSION = "1.0.0"
+YOUTUBE_ID = re.compile(r'[A-Za-z0-9_-]{11}')
 TMX_VIDEO_HOSTS_BY_PREFIX = {
     "tmnforever": "tmnf.exchange",
     "united": "tmuf.exchange",
@@ -47,7 +53,7 @@ def register(aseco: "Aseco"):
     aseco.register_event("onNewChallenge2", tmxvideo_new_challenge)
     aseco.add_chat_command(
         "gps",
-        "Shows TMX GPS/videos for the current track",
+        f"Shows {_provider(aseco)} GPS/videos for the current track",
         owner="chat/tmxvideo",
         app="tmx",
         category="chat-tmx",
@@ -74,8 +80,13 @@ def _escape_title(title: str) -> str:
     return str(title or "").replace("$", "$$")
 
 
-def _video_url(video_id: str) -> str:
-    return f"http://youtu.be/{str(video_id or '').strip()}"
+def _provider(aseco):
+    return 'MX' if getattr(aseco, 'is_maniaplanet', False) else 'TMX'
+
+
+def _video_url(aseco, video_id: str) -> str:
+    scheme = 'https' if _provider(aseco) == 'MX' else 'http'
+    return f'{scheme}://youtu.be/{video_id}'
 
 
 def _published_sort_key(item: dict) -> float:
@@ -124,28 +135,40 @@ async def _ensure_current_videos(aseco: "Aseco", challenge=None, *, force=False)
     global _current_uid, _videos, _loading
     ch = challenge or _current_challenge(aseco)
     uid = str(getattr(ch, 'uid', '') or '')
-    if not uid or (not force and uid == _current_uid and not _loading):
+    if not uid or (not force and uid == _current_uid):
         return
     from pyxaseco.core.background_jobs import JobEnvelope, JobPolicy
     from pyxaseco.core.external_io import request_json
     _current_uid, _videos, _loading = uid, [], True
     section = await _resolve_server_section(aseco)
     service = _tmx_service(aseco)
+    is_mp = _provider(aseco) == 'MX'
     job = JobEnvelope.capture(aseco.capture_job_context(), {
         'uid': uid, 'id': int(getattr(ch, 'tmx_id', 0) or 0),
         'prefix': str(getattr(ch, 'tmx_prefix', '') or ''), 'section': section})
     async def operation(envelope):
         p = envelope.payload()
         track_id, prefix = p['id'], p['prefix']
-        if not track_id:
+        if not track_id or (is_mp and prefix != 'mx'):
             track_id, prefix = await service.resolve_tmx_track_id(p['uid'], p['section'])
         if not track_id:
             return 0, '', []
-        host = TMX_VIDEO_HOSTS_BY_PREFIX.get(prefix, 'tmnf.exchange')
+        host = mx.HOST if is_mp else TMX_VIDEO_HOSTS_BY_PREFIX.get(prefix, 'tmnf.exchange')
+        filters = (dict(fields='LinkId,Title,PublishedAt,Map.MapId', mapid=track_id) if is_mp
+                   else dict(fields='LinkId,Title,PublishedAt', trackid=track_id))
         data = await request_json(aseco, 'tmx_video', 'GET',
-            f'https://{host}/api/videos?fields=LinkId,Title,PublishedAt&trackid={track_id}')
-        rows = [dict(row) for row in (data or {}).get('Results', [])
-                if isinstance(row, dict) and row.get('LinkId')]
+            f'https://{host}/api/videos?{urlencode(filters)}',
+            headers={'User-Agent': f'{PRODUCT_NAME}/{BUILD_LABEL}'}, timeout=10)
+        results = data.get('Results') if isinstance(data, dict) else None
+        if not isinstance(results, list):
+            raise ValueError('Invalid Exchange video response.')
+        rows = []
+        for row in results:
+            if not isinstance(row, dict) or not YOUTUBE_ID.fullmatch(str(row.get('LinkId') or '')):
+                continue
+            if is_mp and (not isinstance(row.get('Map'), dict) or row['Map'].get('MapId') != track_id):
+                continue
+            rows.append(dict(row))
         return track_id, prefix, sorted(rows, key=_published_sort_key, reverse=True)
     async def apply(result):
         global _current_tmx_id, _current_tmx_prefix, _videos, _loading, _current_uid
@@ -166,7 +189,7 @@ def _has_videos() -> bool:
 
 
 async def _show_help(aseco: "Aseco", login: str):
-    header = "{#black}/gps <option>$g shows TMX GPS/videos for the current track:"
+    header = f"{{#black}}/gps <option>$g shows {_provider(aseco)} GPS/videos for the current track:"
     help_data = [
         ["...", "{#black}help", "Shows this help window"],
         ["...", "{#black}latest", "Gives the latest video in chat"],
@@ -190,7 +213,7 @@ async def _send_video_in_chat(aseco: "Aseco", login: str, video: dict):
     await _msg_player(
         aseco,
         login,
-        f"Watch $l[{_video_url(link_id)}]{title}$l{{#server}} on YouTube.",
+        f"Watch $l[{_video_url(aseco, link_id)}]{title}$l{{#server}} on YouTube.",
     )
 
 
@@ -205,7 +228,7 @@ async def _show_videos_window(aseco: "Aseco", player):
         rows.append(
             [
                 "{#black}" + _published_label(item),
-                f"$l[{_video_url(link_id)}]{{#black}}{title}$l",
+                f"$l[{_video_url(aseco, link_id)}]{{#black}}{title}$l",
             ]
         )
 
@@ -216,7 +239,7 @@ async def _show_videos_window(aseco: "Aseco", player):
 
 
 async def tmxvideo_startup(aseco: "Aseco", _param=None):
-    _msg_console(aseco, "Plugin TMX Video initialized.")
+    _msg_console(aseco, f"Plugin {_provider(aseco)} Video initialized.")
     try:
         versions = getattr(aseco, "app_versions", None)
         if isinstance(versions, list):
@@ -241,7 +264,13 @@ async def chat_gps(aseco: "Aseco", command: dict):
 
     await _ensure_current_videos(aseco)
     if not _has_videos():
-        await _msg_player(aseco, login, "Video lookup loading; try /gps shortly." if _loading else "{#error}No videos found for this track.")
+        if _loading:
+            text = "Video lookup loading; try /gps shortly."
+        elif not _current_uid:
+            text = "{#error}Video lookup unavailable; try again shortly."
+        else:
+            text = "{#error}No videos found for this track."
+        await _msg_player(aseco, login, text)
         return
 
     if subcmd == "list":
