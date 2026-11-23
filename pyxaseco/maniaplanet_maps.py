@@ -53,7 +53,7 @@ def check_title(metadata, active_title, base_title):
         raise ValueError('Map title and environment disagree; compatibility could not be verified.')
 
 
-def map_identity(path):
+def read_map_xml_header(path):
     """Read only GBX header chunks, never the compressed map body or thumbnail."""
     with Path(path).open('rb') as stream:
         prefix = stream.read(21)
@@ -85,10 +85,14 @@ def map_identity(path):
                 stream.seek(length, 1)
         if end != size or xml is None or b'<!DOCTYPE' in xml.upper() or b'<!ENTITY' in xml.upper():
             raise ValueError('Map XML header could not be verified.')
-        root = ET.fromstring(xml)
-        desc = root.find('desc')
-        return {'title_id': root.get('title', ''),
-                'environment': desc.get('envir', '') if desc is not None else ''}
+        return ET.fromstring(xml)
+
+
+def map_identity(path):
+    root = read_map_xml_header(path)
+    desc = root.find('desc')
+    return {'title_id': root.get('title', ''),
+            'environment': desc.get('envir', '') if desc is not None else ''}
 
 
 def file_key(value):

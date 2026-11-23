@@ -7,13 +7,13 @@ Track info command surface for current song and mod details.
 
 from __future__ import annotations
 
-import html
+import asyncio
 import logging
 import pathlib
-import re
 from typing import TYPE_CHECKING, Any
 
 from pyxaseco.helpers import format_text, strip_colors
+from pyxaseco.maniaplanet_maps import local_map, read_map_xml_header
 
 if TYPE_CHECKING:
     from pyxaseco.core.aseco import Aseco
@@ -77,21 +77,19 @@ def _challenge_abs_path(aseco: 'Aseco') -> pathlib.Path | None:
     filename = getattr(challenge, 'filename', '') or ''
     if not filename:
         return None
+    root = pathlib.Path(str(getattr(aseco.server, 'trackdir', '') or ''))
+    if not root.is_absolute():
+        return None
     try:
-        return (aseco._base_dir.parent / 'GameData' / 'Tracks' / filename).resolve()
-    except Exception:
+        return local_map(root.resolve(), filename)
+    except (OSError, RuntimeError, ValueError):
         return None
 
 
 def _parse_songmod_from_gbx(path: pathlib.Path) -> dict[str, str]:
-    with open(path, 'rb') as f:
-        data = f.read(262144)
-
-    text = data.decode('utf-8', errors='ignore')
-    dep_re = re.compile(
-        r'<dep\b[^>]*\bfile="([^"]+)"[^>]*\burl="([^"]*)"',
-        re.IGNORECASE
-    )
+    root = read_map_xml_header(path)
+    desc = root.find('desc')
+    declared_mod = desc.get('mod', '').strip() if desc is not None else ''
 
     song_file = ''
     song_url = ''
@@ -99,20 +97,20 @@ def _parse_songmod_from_gbx(path: pathlib.Path) -> dict[str, str]:
     mod_file = ''
     mod_url = ''
 
-    for file_attr, url_attr in dep_re.findall(text):
-        file_attr = html.unescape(file_attr or '').strip()
-        url_attr = html.unescape(url_attr or '').strip()
-        norm = file_attr.replace('\\', '/').lower()
+    for dep in root.iter('dep'):
+        file_attr = dep.get('file', '').strip()
+        url_attr = dep.get('url', '').strip()
+        norm = file_attr.replace('\\', '/').casefold()
 
         if not song_file and norm.startswith('challengemusics/'):
             basename = pathlib.PureWindowsPath(file_attr).name
             song_file = pathlib.PureWindowsPath(basename).stem
             song_url = url_attr
 
-        if not mod_file and '/mod/' in norm:
+        if not mod_file and '/mod/' in '/' + norm:
             basename = pathlib.PureWindowsPath(file_attr).name
             mod_file = basename
-            mod_name = pathlib.PureWindowsPath(basename).stem
+            mod_name = declared_mod or pathlib.PureWindowsPath(basename).stem
             mod_url = url_attr
 
     return {
@@ -124,45 +122,36 @@ def _parse_songmod_from_gbx(path: pathlib.Path) -> dict[str, str]:
     }
 
 
-async def _get_songmod(aseco: 'Aseco') -> dict[str, str]:
+async def _get_songmod(aseco: 'Aseco', kind: str, *, with_locator: bool = False) -> dict[str, str]:
     challenge = aseco.server.challenge
     gbx = getattr(challenge, 'gbx', None)
 
-    song_file = _gbx_value(gbx, 'song_file', 'songFile') or ''
-    song_url = _gbx_value(gbx, 'song_url', 'songUrl') or ''
-    mod_name = _gbx_value(gbx, 'mod_name', 'modName') or ''
-    mod_file = _gbx_value(gbx, 'mod_file', 'modFile') or ''
-    mod_url = _gbx_value(gbx, 'mod_url', 'modUrl') or ''
-
-    if song_file or mod_name:
-        return {
-            'song_file': str(song_file),
-            'song_url': str(song_url),
-            'mod_name': str(mod_name),
-            'mod_file': str(mod_file),
-            'mod_url': str(mod_url),
-        }
-
-    path = _challenge_abs_path(aseco)
-    if path and path.exists():
-        try:
-            return await __import__('asyncio').to_thread(_parse_songmod_from_gbx, path)
-        except Exception as e:
-            logger.debug('[Track] GBX parse failed for %s: %s', path, e)
-
-    return {
-        'song_file': '',
-        'song_url': '',
-        'mod_name': '',
-        'mod_file': '',
-        'mod_url': '',
+    info = {
+        'song_file': str(_gbx_value(gbx, 'song_file', 'songFile') or ''),
+        'song_url': str(_gbx_value(gbx, 'song_url', 'songUrl') or ''),
+        'mod_name': str(_gbx_value(gbx, 'mod_name', 'modName') or ''),
+        'mod_file': str(_gbx_value(gbx, 'mod_file', 'modFile') or ''),
+        'mod_url': str(_gbx_value(gbx, 'mod_url', 'modUrl') or ''),
     }
+    complete = info[f'{kind}_file'] and (kind != 'mod' or info['mod_name'])
+    if not complete or (with_locator and not info[f'{kind}_url']):
+        try:
+            path = _challenge_abs_path(aseco)
+            if path:
+                parsed = await asyncio.to_thread(_parse_songmod_from_gbx, path)
+                info = {key: value or parsed[key] for key, value in info.items()}
+        except Exception as e:
+            logger.debug('[Track] GBX song/mod lookup failed: %s', e)
+    if info['mod_file'] and not info['mod_name']:
+        info['mod_name'] = pathlib.PureWindowsPath(info['mod_file']).stem
+    return info
 
 
 async def chat_song(aseco: 'Aseco', command: dict):
     player = command['author']
     challenge = aseco.server.challenge
-    info = await _get_songmod(aseco)
+    with_locator = _first_param(command) in ('url', 'loc')
+    info = await _get_songmod(aseco, 'song', with_locator=with_locator)
 
     if info['song_file']:
         msg = format_text(
@@ -170,8 +159,7 @@ async def chat_song(aseco: 'Aseco', command: dict):
             strip_colors(challenge.name),
             info['song_file'],
         )
-        param = _first_param(command)
-        if param in ('url', 'loc') and info['song_url']:
+        if with_locator and info['song_url']:
             msg += '\n{#highlite}$l[' + info['song_url'] + ']' + info['song_url'] + '$l'
     else:
         msg = '{#server}> {#error}No track song found!'
@@ -188,7 +176,8 @@ async def chat_song(aseco: 'Aseco', command: dict):
 async def chat_mod(aseco: 'Aseco', command: dict):
     player = command['author']
     challenge = aseco.server.challenge
-    info = await _get_songmod(aseco)
+    with_locator = _first_param(command) in ('url', 'loc')
+    info = await _get_songmod(aseco, 'mod', with_locator=with_locator)
 
     if info['mod_name']:
         msg = format_text(
@@ -197,8 +186,7 @@ async def chat_mod(aseco: 'Aseco', command: dict):
             info['mod_name'],
             info['mod_file'],
         )
-        param = _first_param(command)
-        if param in ('url', 'loc') and info['mod_url']:
+        if with_locator and info['mod_url']:
             msg += '\n{#highlite}$l[' + info['mod_url'] + ']' + info['mod_url'] + '$l'
     else:
         msg = '{#server}> {#error}No track mod found!'
