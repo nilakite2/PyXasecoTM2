@@ -8,7 +8,9 @@ from pyxaseco.core.gbx_client import GbxError
 from pyxaseco.maniaplanet_callbacks import decode
 from pyxaseco.maniaplanet_client import map_info
 from pyxaseco.maniaplanet_records import RecordsError, import_test_records
+from pyxaseco.maniaplanet_recovery import watch_dedicated
 from pyxaseco.maniaplanet_runtime import ControllerError, course_from_rpc, safe_login
+from pyxaseco.maniaplanet_transitions import TransitionGuard
 from pyxaseco.maniaplanet_ui import PAGER_ANSWERS, command_window, restore_script_ui
 
 
@@ -29,6 +31,8 @@ MP_CALLBACKS = {
     'playerinfochanged': '_cb_player_info_changed',
     'playermanialinkpageanswer': '_mp_manialink_answer',
     'statuschanged': '_mp_status_changed',
+    'serverstart': '_mp_server_start',
+    'serverstop': '_mp_server_stop',
     'echo': '_cb_echo',
     'maplistmodified': '_cb_challenge_list_modified',
     'voteupdated': '_cb_vote_updated',
@@ -46,7 +50,8 @@ class ManiaPlanetController(Aseco):
     is_maniaplanet = True
     app_loadout_filename = 'apps.mp.toml'
 
-    def __init__(self, client, report, db, rpc, *, import_records=False, debug=False, performance=False):
+    def __init__(self, client, report, db, rpc, *, import_records=False, debug=False, performance=False,
+                 recovery_options=None, recovery_handoff=None):
         super().__init__(debug=debug, performance=performance, client=client)
         self.register_service('ui/command_window', command_window, owner='core')
         self.register_event('onShutdown', restore_script_ui)
@@ -59,6 +64,10 @@ class ManiaPlanetController(Aseco):
         self._mp_last_start = {}
         self._mp_resume_players = set()
         self._mp_map_ended = False
+        self.transport_lost = False
+        self._mp_server_stopping = False
+        self._recovery_options = recovery_options
+        self._recovery_handoff = recovery_handoff or {}
         from pyxaseco.maniaplanet_maps import TitleGuard
         self.client.map_guard = TitleGuard(self)
         self.register_event('onSync', self.client.map_guard.restore_preset)
@@ -123,10 +132,6 @@ class ManiaPlanetController(Aseco):
         from apps.platform_core.checkpoints import checkpoints
         self._mp_resume_players = set(checkpoints) if self._mp_course else set()
 
-    async def _enforce_runtime_server_options(self):
-        # Do not override the MP4 dedicated server's networking or voting settings.
-        pass
-
     async def _send_header(self):
         if self._mp_course is None:
             raise ControllerError('The active map did not supply a valid UID and checkpoint count.')
@@ -164,6 +169,12 @@ class ManiaPlanetController(Aseco):
             self.score_phase = self.currstatus == 5 or self._mp_map_ended
         await self.release_event(f'onStatusChangeTo{self.currstatus}', params)
 
+    async def _mp_server_start(self, _params):
+        self._mp_server_stopping = False
+
+    async def _mp_server_stop(self, _params):
+        self._mp_server_stopping = True
+
     async def _mp_manialink_answer(self, params):
         if len(params) >= 3 and safe_login(params[1]):
             try:
@@ -188,9 +199,46 @@ class ManiaPlanetController(Aseco):
         self._mp_map_ended = False
         await super()._begin_race([map_info(info), False, False])
         self._mp_course = course
+        try:
+            await self.client.confirm_map_loaded(course.uid)
+        except (ControllerError, GbxError, OSError, RuntimeError, ValueError) as error:
+            logger.warning('[Transition] Could not complete map confirmation: %s', error)
 
     async def _current_challenge_info(self, params):
         return params[0]
+
+    async def _before_sync(self):
+        if self._recovery_options is None or self.server.isrelay:
+            return
+        title = self._mp_report['server'].get('TitleId')
+        if not self.server.serverlogin or not title:
+            raise ControllerError('Unsafe transition recovery requires a verified server login and title.')
+        scope = (self.server.serverlogin.casefold(), title.casefold())
+        guard = TransitionGuard(self, self._recovery_options, self._base_dir, scope, self._recovery_handoff)
+        await guard.start()
+        await watch_dedicated(guard, self.client)
+        self.client.transitions = guard
+
+    def _request_transport_restart(self):
+        if not self._shutdown_requested:
+            guard = getattr(self.client, 'transitions', None)
+            if guard is not None:
+                if (self._mp_server_stopping
+                        or any(method.casefold() == 'maniaplanet.serverstop'
+                               for method, *_ in self._callback_backlog)
+                        or any(method.casefold() == 'maniaplanet.serverstop'
+                               for method, _ in self.client.get_cb_responses())):
+                    logger.info('Dedicated server stopped normally; automatic recovery skipped.')
+                    self._shutdown_requested = True
+                    return
+                guard.disconnected_attempt = guard.get_attempt()
+            self.transport_lost = True
+        super()._request_transport_restart()
+
+    async def _cb_challenge_list_modified(self, params):
+        await super()._cb_challenge_list_modified(params)
+        if self._mp_course is not None:
+            await self.client.arm_map_transition()
 
     async def _mp_begin_map(self, _params):
         self._mp_course = None
@@ -219,6 +267,7 @@ class ManiaPlanetController(Aseco):
         self._mp_course = None
         self._invalidate_attempts()
         await self._end_race([ranks, data, self.warmup_phase])
+        await self.client.arm_map_transition()
 
     async def _mp_script(self, params):
         name = params[0].casefold() if params and isinstance(params[0], str) else ''
@@ -233,6 +282,9 @@ class ManiaPlanetController(Aseco):
             return
         kind = event['event']
         if kind == 'map_unloading':
+            guard = getattr(self.client, 'transitions', None)
+            if guard is not None:
+                guard.unloading()
             await self._mp_begin_map([])
             return
         if kind == 'map_loaded':
@@ -320,12 +372,15 @@ class ManiaPlanetController(Aseco):
 
 
 async def run_controller(client, report, db, rpc, config_path, *, import_records=False,
-                         debug=False, performance=False):
+                         debug=False, performance=False, recovery_options=None, recovery_handoff=None):
     controller = ManiaPlanetController(client, report, db, rpc, import_records=import_records,
-                                       debug=debug, performance=performance)
+                                       debug=debug, performance=performance, recovery_options=recovery_options,
+                                       recovery_handoff=recovery_handoff)
     try:
         await controller.run(str(config_path))
     except Exception as error:
+        if getattr(client, 'transitions', None) is not None and not client.is_connected() and not controller._shutdown_requested:
+            controller._request_transport_restart()
         if controller.restart_requested:
             logger.error('Run failed while restart was requested; proceeding with controller re-exec (%s)',
                          type(error).__name__)
@@ -343,4 +398,4 @@ async def run_controller(client, report, db, rpc, config_path, *, import_records
                     await localdb.shutdown(None)
             finally:
                 await controller.performance.stop()
-    return controller.restart_requested
+    return controller.restart_requested, controller.transport_lost

@@ -1,6 +1,11 @@
-"""Thin tracklist entry point for the TMX app."""
+"""Tracklist actions used by the Eyepiece UI."""
 
-from apps.tmx import tracklist as _impl
-
-globals().update({k: v for k, v in vars(_impl).items() if not k.startswith("__")})
-__all__ = [k for k in globals() if not k.startswith("__")]
+from apps.tmx.tracklist import (
+    _build_trackauthorlist_window,
+    _build_tracklist_filter_window,
+    _build_tracklist_sorting_window,
+    _build_tracklist_window,
+    _close_tracklist_window,
+    _send_trackauthorlist_window,
+    _send_tracklist_window,
+)

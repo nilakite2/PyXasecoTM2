@@ -1,12 +1,11 @@
 """App-management capabilities shared with the optional in-game manager."""
 
-RETIRED_STANDALONE_APPS = frozenset({'records_ultimania'})
+RETIRED_STANDALONE_APPS = frozenset({'records_ultimania', 'match_overlay'})
 
 MANAGEABLE_STANDALONE_APPS = {
     'ui_fast': 'FAST UI',
     'sponsor_banner': 'Sponsor Banner',
     'server_admin_bridge': 'Server Admin Bridge',
-    'match_overlay': 'Match Overlay',
     'pyxa_stats': 'PYXA Stats',
     'alternate_scoretable': 'Alternate Scoretable',
     'server_neighborhood': 'Server Neighborhood',
@@ -33,7 +32,6 @@ PROTECTED_STANDALONE_APPS = {
 RELOADABLE_APPS = {
     'ui_fast',
     'sponsor_banner',
-    'match_overlay',
     'pyxa_stats',
     'alternate_scoretable',
     'server_neighborhood',

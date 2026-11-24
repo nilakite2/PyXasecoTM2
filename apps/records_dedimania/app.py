@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 from pyxaseco.core.base import App, Component
 
-from . import commands, service
+from . import commands, maniaplanet
 from .service import DEDI_SETTINGS_SCHEMA
 
 if TYPE_CHECKING:
@@ -53,7 +53,7 @@ class DedimaniaApp(App):
             DedimaniaModuleSurface(
                 component_id='records_dedimania.service',
                 description='Dedimania service integration and record synchronization surface.',
-                module=service,
+                module=maniaplanet,
             ),
             DedimaniaModuleSurface(
                 component_id='records_dedimania.commands',
@@ -64,11 +64,6 @@ class DedimaniaApp(App):
         self.components = self.dedimania_surfaces
 
     def register_runtime(self, aseco: 'Aseco') -> None:
-        if getattr(aseco, 'is_maniaplanet', False):
-            from .maniaplanet import register
-            register(aseco)
-            commands.register(aseco)
-            return
         for component in self.components:
             component.register(aseco)
 

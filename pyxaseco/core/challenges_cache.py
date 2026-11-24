@@ -236,8 +236,8 @@ async def get_metadata_map(pool) -> dict[str, dict]:
 async def schedule_backfill(aseco: 'Aseco', pool):
     from pyxaseco.core.background_jobs import JobEnvelope, JobPolicy
     from pyxaseco.core.playlist import playlist
-    tracks = await _paged_challenge_list(aseco)
     source = playlist(aseco)
+    tracks = await source.snapshot()
     revision = source.revision
     # The playlist snapshot is captured on the ordered lane; no mutable
     # current-map state is needed by the low-priority enrichment worker.
@@ -249,11 +249,6 @@ async def schedule_backfill(aseco: 'Aseco', pool):
         return
     aseco.jobs.service('metadata_backfill', JobPolicy(capacity=1, deadline_seconds=300)).submit(
         job, operation, apply, current_map=False, dedupe_key='backfill')
-
-
-async def _paged_challenge_list(aseco: 'Aseco', batch_size=500):
-    from pyxaseco.core.playlist import playlist
-    return await playlist(aseco).snapshot()
 
 
 async def _fetch_challenge_info_times(aseco: 'Aseco', filename: str) -> tuple[int, int]:

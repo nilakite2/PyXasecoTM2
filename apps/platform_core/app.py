@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 from pyxaseco.core.base import App, Component
 
-from . import chatlog, checkpoints, donate, localdb, rounds, rpoints, songmod, track
+from . import chatlog, checkpoints, donate, localdb, rounds, songmod, track
 
 if TYPE_CHECKING:
     from pyxaseco.core.aseco import Aseco
@@ -36,8 +36,6 @@ APP_METADATA = {
         "core/chatlog",
         "core/checkpoints",
         "core/donate",
-        "feature/rpoints",
-        "plugin_rpoints",
         "chat/songmod",
     ],
 }
@@ -104,11 +102,6 @@ class PlatformCoreApp(App):
                 module=donate,
             ),
             PlatformCoreModuleSurface(
-                component_id='platform_core.rpoints',
-                description='Optional rounds-points system surface.',
-                module=rpoints,
-            ),
-            PlatformCoreModuleSurface(
                 component_id='platform_core.songmod',
                 description='Current track song and mod command surface.',
                 module=songmod,
@@ -117,21 +110,16 @@ class PlatformCoreApp(App):
         self.components = self.service_surfaces
 
     def register_runtime(self, aseco: 'Aseco') -> None:
-        for component in self._components_for(aseco):
+        for component in self.components:
             component.register(aseco)
 
     async def startup(self, context) -> None:
-        for component in self._components_for(context.aseco):
+        for component in self.components:
             await component.startup(context)
 
     async def shutdown(self, context) -> None:
-        for component in reversed(self._components_for(context.aseco)):
+        for component in reversed(self.components):
             await component.shutdown(context)
-
-    def _components_for(self, aseco):
-        if not getattr(aseco, 'is_maniaplanet', False):
-            return self.components
-        return tuple(component for component in self.components if component.module is not rpoints)
 
 
 APP_CLASS = PlatformCoreApp

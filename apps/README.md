@@ -40,7 +40,6 @@ Each app guide explains its purpose, commands, configuration, changes and credit
 | [Hide Chat](hidechat/README.md) | Personal native-chat visibility. |
 | [JFreu](jfreu/README.md) | Admission, spectator and server-message tools. |
 | [Jukebox](jukebox/README.md) | Map lists, requests and TMX searches. |
-| [Match Overlay](match_overlay/README.md) | Team match/series scoreboard overlay. |
 | [Platform Core](platform_core/README.md) | Shared database and gameplay services. |
 | [Platform UI](platform_ui/README.md) | Styles, panels and personal preferences. |
 | [Players](players/README.md) | Player statistics and server ranking. |

@@ -231,11 +231,18 @@ class ManiaPlanetClient(GbxClient):
 
     async def query(self, method, *params):
         mapped = MAP_RPC.get(method, method)
+        transitions = getattr(self, 'transitions', None)
+        if transitions is not None and mapped == 'SaveMatchSettings' and transitions.temporary_bridge:
+            raise ControllerError('Wait for the temporary recovery bridge to leave the live playlist before saving.')
         guard = getattr(self, 'map_guard', None)
         if guard is not None:
             if mapped == 'LoadMatchSettings':
                 return await guard.load(super().query, *params)
             await guard.before_rpc(mapped, params)
+        if transitions is not None and mapped == 'ChooseNextMap' and len(params) == 1:
+            return await transitions.choose(super().query, params[0])
+        if transitions is not None and mapped == 'NextMap' and not params:
+            return await transitions.advance(super().query)
         if method == 'ForceEndRound':
             return await super().query('TriggerModeScriptEventArray', 'Trackmania.ForceEndRound', [str(time_ns())])
         if method == 'SetChallengeList':
@@ -280,6 +287,8 @@ class ManiaPlanetClient(GbxClient):
 
     async def query_ignore_result(self, method, *params):
         mapped = MAP_RPC.get(method, method)
+        if getattr(self, 'transitions', None) is not None and mapped == 'NextMap':
+            return await self.query(method, *params)
         if getattr(self, 'map_guard', None) is not None and mapped in (
                 'AddMap', 'InsertMap', 'ChooseNextMap', 'AddMapList', 'InsertMapList',
                 'SetNextMapList', 'SetNextMapIndex', 'SetNextMapIdent', 'LoadMatchSettings', 'SaveMatchSettings', 'SetMapList'):
@@ -295,6 +304,14 @@ class ManiaPlanetClient(GbxClient):
         if args is None:
             return False
         return await super().query_ignore_result(mapped, *args)
+
+    async def arm_map_transition(self):
+        if getattr(self, 'transitions', None) is not None:
+            await self.transitions.arm_rotation(super().query)
+
+    async def confirm_map_loaded(self, uid):
+        if getattr(self, 'transitions', None) is not None:
+            await self.transitions.loaded(super().query, uid)
 
     async def _reorder_maps(self, filenames):
         """Reorder only the existing rotation, recovering it if an RPC step fails."""

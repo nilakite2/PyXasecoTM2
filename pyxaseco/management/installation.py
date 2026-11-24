@@ -1,4 +1,4 @@
-"""Fresh-install transactions shared by setup GUI and headless CLI. No server starts."""
+"""Legacy TMF fresh-install transactions and shared release path validation."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ import stat
 import subprocess
 import sys
 import threading
-import tomllib
 from uuid import uuid4
 import xml.etree.ElementTree as ET
 import zipfile
@@ -83,6 +82,8 @@ def read_payload(path, expected):
             names = [item.filename for item in entries]
             if len({name.casefold() for name in names}) != len(names):
                 raise ManagementError('Duplicate/case-colliding payload files')
+            if 'apps.mp.toml' in names:
+                raise ManagementError('The legacy installer does not support PyXasecoMP; use the manual installation guide')
             manifest = json.loads(archive.read('payload-manifest.json'))
             if manifest.get('schema') != 1 or manifest.get('version') != '1.3':
                 raise ManagementError('Unsupported controller payload format')

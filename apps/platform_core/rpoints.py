@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from pyxaseco.app_config import AppSetting, AppSettingsSchema, as_bool, as_str, bind_app_settings
 from pyxaseco.helpers import display_manialink, display_manialink_multi, format_text
 
 if TYPE_CHECKING:
@@ -23,71 +22,6 @@ ROUNDS_POINTS = {
     'simple5': ('Simple 5', [5, 4, 3, 2, 1]),
     'simple10': ('Simple 10', [10, 9, 8, 7, 6, 5, 4, 3, 2, 1]),
 }
-
-RPOINTS_SETTINGS_SCHEMA = AppSettingsSchema(
-    app_id='platform_core',
-    section_name='platform_core',
-    description='Optional rounds-points integration settings',
-    settings=(
-        AppSetting('rpoints/enabled', False, as_bool, 'Enable the optional rounds-points feature.', 'rpoints'),
-        AppSetting('rpoints/default_system', '', as_str, 'Default points system label or explicit list.', 'rpoints'),
-    ),
-)
-
-feature_rpoints = False
-default_rpoints_system = ''
-
-
-def _apply_app_defaults(aseco: 'Aseco') -> None:
-    global feature_rpoints, default_rpoints_system
-    bound = bind_app_settings(RPOINTS_SETTINGS_SCHEMA, getattr(aseco, '_base_dir', None))
-    feature_rpoints = bool(bound.values['rpoints/enabled'])
-    default_rpoints_system = str(bound.values['rpoints/default_system'] or '').strip()
-    setattr(aseco, 'feature_rpoints', feature_rpoints)
-    setattr(aseco.server, 'feature_rpoints', feature_rpoints)
-
-
-def register(aseco: 'Aseco'):
-    _apply_app_defaults(aseco)
-    if not feature_rpoints:
-        return
-    aseco.register_event('onSync', init_rpoints)
-    aseco.add_chat_command('rpoints', 'Shows current Rounds points system', app='platform_core', category='chat-server')
-    aseco.register_event('onChat_rpoints', chat_rpoints)
-
-
-def _configured_default_system(aseco: 'Aseco') -> str:
-    configured = str(default_rpoints_system or '').strip()
-    if configured:
-        return configured
-    return str(getattr(getattr(aseco, 'settings', None), 'default_rpoints', '') or '').strip()
-
-
-async def init_rpoints(aseco: 'Aseco', _param):
-    system = _configured_default_system(aseco)
-    if not system:
-        return
-
-    if re.match(r'^\d+,[\d,]*\d+$', system):
-        points = list(map(int, system.split(',')))
-        try:
-            await aseco.client.query('SetRoundCustomPoints', points, False)
-            aseco.console('Initialize default rounds points: {1}', system)
-        except Exception as e:
-            aseco.console('Invalid rounds points: {1}  Error: {2}', system, str(e))
-    elif system in ROUNDS_POINTS:
-        name, points = ROUNDS_POINTS[system]
-        try:
-            await aseco.client.query('SetRoundCustomPoints', points, False)
-            aseco.console('Initialize default rounds points: {1} - {2}', system, name)
-        except Exception as e:
-            aseco.console('Invalid rounds points: {1}  Error: {2}', system, str(e))
-    elif system == '':
-        try:
-            await aseco.client.query('SetRoundCustomPoints', [], False)
-        except Exception:
-            pass
-
 
 async def _get_current_points(aseco: 'Aseco') -> list[int]:
     try:
@@ -224,22 +158,3 @@ async def admin_rpoints(aseco: 'Aseco', admin, logtitle: str, chattitle: str, co
     )
 
 
-async def chat_rpoints(aseco: 'Aseco', command: dict):
-    player = command['author']
-    login = player.login
-    points = await _get_current_points(aseco)
-    system = _match_named_system(points)
-
-    if not points:
-        message = format_text(aseco.get_chat_message('NO_RPOINTS'), '')
-    elif system:
-        message = format_text(
-            aseco.get_chat_message('RPOINTS_NAMED'),
-            '', system, '', ','.join(str(p) for p in points)
-        )
-    else:
-        message = format_text(
-            aseco.get_chat_message('RPOINTS_NAMELESS'),
-            '', ','.join(str(p) for p in points)
-        )
-    await _send_login(aseco, login, message)

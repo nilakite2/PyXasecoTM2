@@ -36,20 +36,21 @@ class RetainedDelivery:
         self._scan_offset = 0
         aseco.register_event('onEverySecond', self.tick)
 
-    async def retain(self, payload, *, map_uid=None):
+    async def retain(self, payload, *, map_uid=None, dedupe_key=None, kick=True):
         context = self.aseco.capture_job_context()
         detached = {'version': 1, 'server_id': context.server_id,
                     'map_uid': context.map_uid if map_uid is None else str(map_uid),
                     'generation': context.map_generation,
                     'run_id': context.run_id, 'payload': payload}
         try:
-            await self.aseco.record_outbox.retain(self.owner, uuid4().hex, detached)
+            await self.aseco.record_outbox.retain(self.owner, dedupe_key or uuid4().hex, detached)
         except Exception:
             self.aseco.performance.increment('records.' + self.owner + '.retain_failed')
             logger.error('Cannot retain %s submission; record delivery requires attention', self.owner)
             raise
         self.aseco.performance.increment('records.' + self.owner + '.retained')
-        await self.tick(self.aseco)
+        if kick:
+            await self.tick(self.aseco)
 
     async def tick(self, _aseco, _param=None):
         now = time.monotonic()

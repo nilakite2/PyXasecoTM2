@@ -1,6 +1,25 @@
 [aseco]
 lock_password = ""
 
+[mp_recovery]
+enabled = true
+# Optional manual overrides. Confirmed failures are learned from the transition log.
+# Entries are directed [current UID, next UID] pairs; the reverse is not blocked.
+unsafe_pairs = []
+# Preferred bridge maps already in the live playlist.
+bridge_uids = []
+# Fallback bridge from ManiaExchange. Set the ID to 0 to disable the download.
+bridge_mx_id = 267668
+bridge_mx_uid = "A_XjtQOrBTbuiNA3d7_FwitQ5F9"
+# Windows recovery: "auto" finds a launcher named after the parent folder.
+# Or specify a launcher path, e.g. "../ServerName.bat", relative to this file.
+# If the .exe does not share its name, set dedicated_executable to the running .exe path.
+# Leave both blank if another tool starts the dedicated server.
+dedicated_batch = ""
+dedicated_executable = ""
+# Only for direct .exe launch without a batch file.
+dedicated_arguments = []
+
 [masteradmins]
 tmlogin = []
 ipaddress = []

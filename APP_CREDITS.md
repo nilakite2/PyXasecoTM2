@@ -27,7 +27,6 @@
 | [Hide Chat](apps/hidechat/README.md) | schmidi; basic code by slig. |
 | [JFreu](apps/jfreu/README.md) | JFreu; XAseco updates by Xymph; Unspec fix by FuFi. |
 | [Jukebox](apps/jukebox/README.md) | RASP: Xymph and AssemblerManiac. |
-| [Match Overlay](apps/match_overlay/README.md) | Chris92 and TheM; inspired by svenstucki's ESL TV tSplash. |
 | [Platform Core](apps/platform_core/README.md) | Localdatabase: Florian Schnell / Xymph. XAseco gameplay services: Xymph. RASP: Xymph / AssemblerManiac. |
 | [Platform UI](apps/platform_ui/README.md) | XAseco styles, panels and Last Window: Xymph. |
 | [Players](apps/players/README.md) | XAseco player commands: Xymph. RASP: Xymph and AssemblerManiac. |

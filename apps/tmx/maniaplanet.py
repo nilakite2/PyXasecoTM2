@@ -59,10 +59,6 @@ def verify_download(map_data, title_id='TMStadium@nadeo'):
     # title/script before insertion. Do not guess compatibility from MX labels.
 
 
-def verify_stadium_download(map_data):
-    verify_download(map_data)
-
-
 def _choice(options, value):
     return options[value] if type(value) is int and 0 <= value < len(options) else ''
 

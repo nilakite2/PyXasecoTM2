@@ -22,7 +22,7 @@ def _records_eyepiece_section(base_dir: pathlib.Path) -> tuple[dict[str, Any], p
     if not isinstance(data, dict):
         return {}, path
     for key in ('ui', 'records_eyepiece', 'plugin_records_eyepiece'):
-        value = data.get(key, {})
+        value = data.get(key)
         if isinstance(value, dict):
             return value, path
     return {}, path

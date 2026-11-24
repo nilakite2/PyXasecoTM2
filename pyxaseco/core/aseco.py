@@ -27,7 +27,7 @@ from uuid import uuid4
 from collections import deque
 
 from pyxaseco import __version__ as PYXASECO_VERSION
-from pyxaseco.core.gbx_client import GbxClient, GbxError, GbxAuthenticationError, GbxProtocolError
+from pyxaseco.core.gbx_client import GbxClient, GbxError
 from pyxaseco.core.app_manager import AppManager
 from pyxaseco.core.app_metadata import AppMetadata
 from pyxaseco.core.event_bus import EventBus
@@ -44,40 +44,9 @@ from pyxaseco.core.record_outbox import RecordOutbox, create_record_outbox
 from pyxaseco.management.config_store import data_path, outbox_path
 from pyxaseco.core.widget_delivery import WidgetDelivery
 from pyxaseco.helpers import format_time_millis
-from pyxaseco.models import (
-    Player, PlayerList, Challenge, Gameinfo, Server, ChatCommand,
-    Record, RecordList
-)
+from pyxaseco.models import Player, Challenge, Gameinfo, Server, ChatCommand
 
 logger = logging.getLogger(__name__)
-
-TMF_BUILD = '2011-02-21'   # minimum required TMF dedicated server build
-
-# Dedicated server callbacks we handle
-_CALLBACK_MAP: dict[str, str] = {
-    'TrackMania.PlayerConnect':               '_cb_player_connect',
-    'TrackMania.PlayerDisconnect':            '_cb_player_disconnect',
-    'TrackMania.PlayerChat':                  '_cb_player_chat',
-    'TrackMania.PlayerFinish':                '_cb_player_finish',
-    'TrackMania.PlayerCheckpoint':            '_cb_player_checkpoint',
-    'TrackMania.PlayerInfoChanged':           '_cb_player_info_changed',
-    'TrackMania.PlayerServerMessageAnswer':   '_cb_player_server_msg_answer',
-    'TrackMania.PlayerManialinkPageAnswer':   '_cb_manialink_answer',
-    'TrackMania.BeginChallenge':              '_cb_begin_challenge',
-    'TrackMania.EndChallenge':                '_cb_end_challenge',
-    'TrackMania.EndRound':                    '_cb_end_round',
-    'TrackMania.BeginRound':                  '_cb_begin_round',
-    'TrackMania.StatusChanged':               '_cb_status_changed',
-    'TrackMania.BillUpdated':                 '_cb_bill_updated',
-    'TrackMania.ChallengeListModified':       '_cb_challenge_list_modified',
-    'TrackMania.PlayerIncoherence':           '_cb_player_incoherence',
-    'TrackMania.VoteUpdated':                 '_cb_vote_updated',
-    'TrackMania.Echo':                        '_cb_echo',
-    'TrackMania.TunnelDataReceived':          '_cb_tunnel_data',
-    'TrackMania.ManualFlowControlTransition': '_cb_flow_transition',
-    'TrackMania.ChallengeRestart':              '_cb_challenge_restart',
-}
-
 
 class Aseco:
     """Main Xaseco controller."""
@@ -653,87 +622,15 @@ class Aseco:
         return load_apps_list(apps_path)
 
     async def _configure_dedicated(self):
-        version = await self.client.query('GetVersion')
-        self.server.game = version.get('Name', '')
-        self.server.version = version.get('Version', '')
-        self.server.build = version.get('Build', '')
-        if self.server.get_game() != 'TMF':
-            raise RuntimeError(f"This is a TMF-only build but server reports game: {self.server.game}")
+        raise NotImplementedError
+
 
     async def _prepare_server_sync(self):
         pass
 
     async def _connect(self):
-        """Authenticate with the dedicated server and enable callbacks."""
-        if self.settings.server_password == 'SuperAdmin':
-            logger.warning("Insecure password 'SuperAdmin' — change it in dedicated config!")
+        raise NotImplementedError
 
-        deadline = time.monotonic() + max(120.0, float(self.server.timeout or 0))
-        try:
-            async with asyncio.timeout_at(deadline):
-                while True:
-                    try:
-                        await self.gbx.connect(
-                            self.server.ip, self.server.port,
-                            timeout=max(1.0, float(self.server.timeout or 10)),
-                        )
-                        await self.gbx.authenticate(self.server.login, self.server.password)
-                        await self.gbx.query('EnableCallbacks', True)
-                        await self._wait_server_ready(deadline)
-                        return
-                    except (GbxAuthenticationError, GbxProtocolError):
-                        raise
-                    except GbxError as error:
-                        if error.code != -32300:
-                            raise
-                        await self.client.disconnect()
-                        logger.warning('Dedicated server connection unavailable; retrying: %s', error)
-                        await asyncio.sleep(2)
-        except TimeoutError as error:
-            self._restart_requested = True
-            self._shutdown_requested = True
-            raise RuntimeError('Timed out waiting for dedicated server to be ready; '
-                               'controller restart will retry the connection') from error
-
-    async def _wait_server_ready(self, deadline=None):
-        """Poll GetStatus until server is Running - Play (code 4)."""
-        if deadline is None:
-            deadline = time.monotonic() + max(120.0, float(self.server.timeout or 0))
-        last = ''
-        last_error: Exception | None = None
-
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError('Dedicated server readiness deadline expired') from last_error
-            try:
-                status = await asyncio.wait_for(self.client.query('GetStatus'), timeout=remaining)
-                last_error = None
-            except Exception as e:
-                last_error = e
-                if not self.client.is_connected():
-                    raise
-                if time.monotonic() >= deadline:
-                    raise TimeoutError('Dedicated server readiness deadline expired') from e
-                logger.warning('GetStatus failed while waiting for dedicated server readiness: %s', e)
-                await asyncio.sleep(1)
-                continue
-
-            if status.get('Code') == 4:
-                return
-
-            if not last:
-                self.console('[PyXaseco] Waiting for server to reach Running - Play...')
-
-            name = status.get('Name', '')
-            if name != last:
-                self.console('[PyXaseco] Server status: {1}', name)
-                last = name
-
-            if time.monotonic() >= deadline:
-                raise TimeoutError('Dedicated server readiness deadline expired')
-
-            await asyncio.sleep(1)
 
     async def _server_sync(self):
         """Sync server state."""
@@ -777,8 +674,8 @@ class Aseco:
 
         # Server options
         await self._get_server_options()
-        await self._enforce_runtime_server_options()
         
+        await self._before_sync()
         # Fire sync event
         await self.release_event('onSync', None)
 
@@ -794,24 +691,15 @@ class Aseco:
         if self.currstatus != 100:
             await self._begin_race(None)
 
+    async def _before_sync(self):
+        pass
+
     async def _get_server_options(self):
         """Fetch and cache server options."""
         opts = await self.client.query('GetServerOptions')
         self.server.name    = opts.get('Name', '')
         self.server.maxplay = opts.get('CurrentMaxPlayers', 0)
         self.server.maxspec = opts.get('CurrentMaxSpectators', 0)
-
-    async def _enforce_runtime_server_options(self):
-        """
-        Apply controller-owned dedicated-server runtime options.
-
-        Keep VehicleNetQuality pinned to 1 so reconnects / restarts restore
-        the expected networking behavior automatically.
-        """
-        try:
-            await self.client.query_ignore_result('SetVehicleNetQuality', 1)
-        except Exception as e:
-            logger.warning('Could not enforce SetVehicleNetQuality(1): %s', e)
 
     async def _send_header(self):
         """Send a version header to in-game server chat."""
@@ -913,7 +801,7 @@ class Aseco:
     # ------------------------------------------------------------------
 
     def _callback_handler_name(self, method):
-        return _CALLBACK_MAP.get(method)
+        raise NotImplementedError
 
     async def _cb_player_connect(self, params: list):
         """TrackMania.PlayerConnect: [login, is_spectator]"""

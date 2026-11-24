@@ -52,6 +52,10 @@ class DedimaniaMP:
         self._next_request = 0.0
         self.submissions = DedimaniaSubmissions(self)
 
+    def configured(self, aseco):
+        return bool(str(_env('PYXASECOMP_DEDI_CODE') or '').strip()
+                    and safe_login(aseco.server.serverlogin))
+
     async def _request(self, aseco, method, *args, timeout=15):
         calls = [{'methodName': method, 'params': list(args)},
                  {'methodName': 'dedimania.WarningsAndTTR', 'params': []}]
@@ -106,9 +110,8 @@ class DedimaniaMP:
         await self._fetch(aseco, challenge)
 
     async def _fetch(self, aseco, challenge):
-        code = str(_env('PYXASECOMP_DEDI_CODE') or '').strip()
         server = aseco.server
-        if not code or not safe_login(server.serverlogin) or not challenge.uid:
+        if not self.configured(aseco) or not challenge.uid:
             self._next_request = monotonic() + 240
             return
         info = {'UId': challenge.uid, 'Name': challenge.name, 'Environment': challenge.environment or 'Stadium',

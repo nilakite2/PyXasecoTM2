@@ -14,7 +14,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from apps.platform_ui.hud_layout import LEGACY_PANEL_TYPES, PANELS, POSITION_STEPS
-from pyxaseco.models import Gameinfo
+from pyxaseco.management.config_views import (
+    current_ui_mode_key as _current_ui_mode_key, discover_table_items as _discover_table_items_from_data,
+)
 from pyxaseco.management.app_policy import (
     MANAGEABLE_STANDALONE_APPS, PROTECTED_STANDALONE_APPS, RELOADABLE_APPS,
 )
@@ -604,40 +606,6 @@ def _read_nested(data: Any, path: tuple[str, ...]) -> Any:
     return node
 
 
-def _discover_table_items_from_data(
-    aseco: 'Aseco',
-    app_key: str,
-    file_path: Path,
-    root_table: tuple[str, ...],
-    data: dict[str, Any],
-    *,
-    label_prefix: tuple[str, ...] = (),
-) -> list[dict[str, Any]]:
-    root = _read_nested(data, root_table)
-    if not isinstance(root, dict):
-        return []
-
-    file_name = str(file_path.relative_to(_root_dir(aseco))).replace('\\', '/')
-    items: list[dict[str, Any]] = []
-
-    def visit(path_parts: tuple[str, ...], table: dict[str, Any], labels: tuple[str, ...]) -> None:
-        scalar_keys = [key for key, value in table.items() if not isinstance(value, dict)]
-        if scalar_keys:
-            rel_parts = path_parts if path_parts else (root_table[-1],)
-            items.append({
-                'key': '.'.join(rel_parts),
-                'label': _format_config_label(labels or rel_parts[-1:]),
-                'file': file_name,
-                'table_path': root_table + path_parts,
-            })
-        for key, value in table.items():
-            if isinstance(value, dict):
-                visit(path_parts + (key,), value, labels + (key,))
-
-    visit((), root, label_prefix)
-    return items
-
-
 def _config_items_for_app(aseco: 'Aseco', app_key: str) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     seen: set[tuple[str, tuple[str, ...]]] = set()
@@ -682,7 +650,6 @@ def _config_items_for_app(aseco: 'Aseco', app_key: str) -> list[dict[str, Any]]:
                 continue
             discovered = _discover_table_items_from_data(
                 aseco,
-                app_key,
                 file_path,
                 (str(root_key),),
                 data,
@@ -865,26 +832,6 @@ def _unknown_apps_target(name: str) -> str:
 
 def _is_ui_item(item: dict[str, Any]) -> bool:
     return str(item.get('file', '')).replace('\\', '/') == 'apps/ui/app_defaults.toml'
-
-
-def _current_ui_mode_key(aseco: 'Aseco') -> str | None:
-    mode = getattr(getattr(aseco.server, 'gameinfo', None), 'mode', -1)
-    try:
-        from apps.ui.config import _effective_mode
-        mode = _effective_mode(aseco)
-    except Exception:
-        pass
-
-    mapping = {
-        Gameinfo.RNDS: 'rounds',
-        Gameinfo.TA: 'time_attack',
-        Gameinfo.TEAM: 'team',
-        Gameinfo.LAPS: 'laps',
-        Gameinfo.STNT: 'stunts',
-        Gameinfo.CUP: 'cup',
-        Gameinfo.SCOR: 'score',
-    }
-    return mapping.get(int(mode)) if isinstance(mode, int) else None
 
 
 def _ui_showing_score(aseco: 'Aseco') -> bool:

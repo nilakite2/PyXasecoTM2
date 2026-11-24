@@ -146,15 +146,29 @@ def main(argv=None, *, configure_logging=None, default_run=False):
         if args.run:
             from pyxaseco.maniaplanet_client import ManiaPlanetClient
             from pyxaseco.maniaplanet_controller import run_controller
+            from pyxaseco.maniaplanet_recovery import reconnect
+            from pyxaseco.maniaplanet_transitions import HANDOFF, read_config
 
             restart_requested = False
+            try:
+                recovery_options = read_config(root)
+                recovery_handoff = json.loads(os.environ.pop(HANDOFF, '{}'))
+                if not isinstance(recovery_handoff, dict):
+                    recovery_handoff = {}
+            except (OSError, ValueError) as error:
+                raise ControllerError(f'Could not read ManiaPlanet recovery configuration: {error}') from error
 
             async def run_shared(rpc, report):
                 nonlocal restart_requested
-                restart_requested = await run_controller(
+                restart_requested, transport_lost = await run_controller(
                     rpc, report, config, rpc_args, root / 'config.toml',
                     import_records=args.import_test_records, debug=args.debug, performance=args.perf,
+                    recovery_options=recovery_options, recovery_handoff=recovery_handoff,
                 )
+                guard = getattr(rpc, 'transitions', None)
+                if restart_requested and guard is not None:
+                    handoff = await reconnect(guard, rpc_args) if transport_lost else guard.handoff()
+                    os.environ[HANDOFF] = json.dumps(handoff)
 
             with runtime_lock(root):
                 if configure_logging is not None:

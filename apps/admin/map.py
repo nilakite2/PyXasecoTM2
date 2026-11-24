@@ -117,7 +117,13 @@ async def handle_subcommand(
             except Exception:
                 pass
 
-        await aseco.client.query_ignore_result('NextChallenge')
+        from pyxaseco.maniaplanet_runtime import ControllerError
+        try:
+            if not await aseco.client.query_ignore_result('NextChallenge'):
+                return True
+        except ControllerError as error:
+            await admin_chat._reply(aseco, login, '{#server}> {#error}' + str(error))
+            return True
         if skip_warning:
             await admin_chat._reply(aseco, login, skip_warning)
         aseco.console('{1} [{2}] forced next challenge', logtitle, login)

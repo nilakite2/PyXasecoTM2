@@ -17,7 +17,10 @@ from pyxaseco.helpers import format_time
 from pyxaseco.maniaplanet_runtime import safe_login
 from pyxaseco.models import Gameinfo
 
-from .mp_replays import MAX_BATCH_BYTES, MAX_REPLAY_BYTES, ReplayError, check_replay
+from .mp_replays import (
+    MAX_BATCH_BYTES, MAX_REPLAY_BYTES, ReplayError, check_replay,
+    read_spooled_batch, remove_spooled_batch, spool_batch,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -92,6 +95,7 @@ class DedimaniaSubmissions:
         self._top1 = 0
         self._pending = {}
         self._pending_bytes = 0
+        self._staged_batch = None
         self._players = {}
         self._player_inflight = set()
         self._next_player_try = {}
@@ -101,15 +105,20 @@ class DedimaniaSubmissions:
 
     def _retainer(self, aseco):
         if self._delivery is None:
+            root = Path(aseco._base_dir)
+
             async def prepare(payload):
                 try:
-                    result = await file_io(self._prepare_replays, payload)
-                except (ReplayError, ValueError, TypeError, KeyError, binascii.Error) as error:
+                    result = await file_io(self._prepare_replays, payload, root)
+                except (FileNotFoundError, ValueError, TypeError, KeyError, binascii.Error) as error:
                     logger.warning('[Dedimania MP] Retained submission has invalid replay evidence')
                     raise PreparationRejected('Invalid MP replay evidence') from error
+                except OSError as error:
+                    self._delivery_retry_at = monotonic() + 30
+                    raise PreparationDeferred('Retained MP replay file is unavailable') from error
                 try:
                     result['session'] = await self.reader._ensure_session(aseco)
-                    for player in payload['players']:
+                    for player in result.pop('players'):
                         status = await self.reader._request(
                             aseco, 'dedimania.PlayerConnect', result['session'], player['Login'],
                             player['NickName'], player['Path'], player['IsSpec'])
@@ -152,7 +161,12 @@ class DedimaniaSubmissions:
                 logger.warning('[Dedimania MP] Submission failed or is uncertain (%s); not automatically resubmitted',
                                result.failure_label)
 
+            async def cleanup(payload):
+                if 'batch_id' in payload:
+                    await file_io(remove_spooled_batch, root, payload['batch_id'])
+
             self._delivery = delivery(aseco, OWNER, send, applied, prepare=prepare, on_failure=failed,
+                                      cleanup=cleanup,
                                       ready=lambda: monotonic() >= self._delivery_retry_at)
         return self._delivery
 
@@ -161,7 +175,11 @@ class DedimaniaSubmissions:
             self._retainer(aseco)
 
     async def new_map(self, aseco, challenge):
-        await self.end_map(aseco)
+        try:
+            await self.end_map(aseco)
+        except Exception:
+            logger.exception('[Dedimania MP] Could not retain the previous map batch; starting the new map anyway')
+            self._clear_pending()
         self._info = None
         self._valid = False
         self._eligibility_reported = False
@@ -310,6 +328,7 @@ class DedimaniaSubmissions:
         self._pending[login] = {'record': row, 'validation': validation, 'ghost': ghost,
                                 'player': player_identity(player), 'top1_required': top1_required}
         self._pending_bytes = total
+        self._staged_batch = None
         rows = [record for record in rows if record['Login'] != login] + [row]
         rows.sort(key=lambda record: (record['Best'], record['Login']))
         for position, record in enumerate(rows, 1):
@@ -335,17 +354,41 @@ class DedimaniaSubmissions:
         payload = {'map': dict(self._info), 'times': [
             {'Login': item['record']['Login'], 'Best': item['record']['Best'],
              'Checks': ','.join(map(str, item['record']['Checks']))} for item in items],
-            'players': [item['player'] for item in items],
-            'validation': base64.b64encode(best['validation']).decode('ascii'),
-            'ghost': base64.b64encode(best['ghost']).decode('ascii'), 'top1_required': best['top1_required']}
-        await self._retainer(aseco).retain(payload, map_uid=self._info['UId'])
-        self._pending.clear()
-        self._pending_bytes = 0
+            'players': [item['player'] for item in items], 'top1_required': best['top1_required']}
+        root = Path(aseco._base_dir)
+        if self._staged_batch is None:
+            async def cancel_spool(token):
+                await file_io(remove_spooled_batch, root, token)
+
+            self._staged_batch = await file_io(
+                spool_batch, root, payload, best['validation'], best['ghost'], cancel_cleanup=cancel_spool)
+        try:
+            # The regular tick can send it after ownership has passed to the outbox.
+            await self._retainer(aseco).retain(
+                {'map': payload['map'], 'batch_id': self._staged_batch},
+                map_uid=self._info['UId'], dedupe_key=self._staged_batch, kick=False)
+        except Exception:
+            self.last_submission_status = 'Not queued; replay snapshot retained for inspection'
+            logger.error('[Dedimania MP] Replay snapshot %s was kept after outbox admission failed',
+                         self._staged_batch)
+            raise
+        self._clear_pending()
         self.last_submission_status = 'Queued for submission'
         logger.info('[Dedimania MP] Queued %d time(s) for map %s', len(items), self._info['UId'])
 
+    def _clear_pending(self):
+        self._pending.clear()
+        self._pending_bytes = 0
+        self._staged_batch = None
+
     @staticmethod
-    def _prepare_replays(payload):
+    def _prepare_replays(payload, root=None):
+        spooled = 'batch_id' in payload
+        if spooled:
+            metadata, replays = read_spooled_batch(root, payload['batch_id'])
+            if not isinstance(metadata, dict) or metadata.get('map') != payload['map']:
+                raise ReplayError('Retained replay map does not match the queued submission')
+            payload = metadata
         info, times = payload['map'], payload['times']
         if not times or len(times) > 500 or not 2 <= info['NbCheckpoints'] <= 10000:
             raise ReplayError('Invalid submission metadata')
@@ -357,19 +400,26 @@ class DedimaniaSubmissions:
         if times != sorted(times, key=lambda row: (row['Best'], row['Login'])):
             raise ReplayError('Submission times are not sorted')
         best = times[0]
-        replays = []
-        for key in ('validation', 'ghost'):
-            value = payload[key]
-            if not isinstance(value, str) or len(value) > MAX_REPLAY_BYTES * 4 // 3 + 4:
-                raise ReplayError('Invalid replay payload size')
-            data = base64.b64decode(value, validate=True)
-            if key == 'validation' or data:
-                check_replay(data, info['UId'], best['Login'], best['Best'], info['NbCheckpoints'])
-            replays.append(data)
+        if not spooled:
+            # Continue to deliver the small batches already retained before file-backed storage.
+            replays = []
+            for key in ('validation', 'ghost'):
+                value = payload[key]
+                if not isinstance(value, str) or len(value) > MAX_REPLAY_BYTES * 4 // 3 + 4:
+                    raise ReplayError('Invalid replay payload size')
+                replays.append(base64.b64decode(value, validate=True))
         validation, ghost = replays
         if sum(map(len, replays)) > MAX_BATCH_BYTES or (payload['top1_required'] and not ghost):
             raise ReplayError('Missing or oversized replay evidence')
-        return {'map': info, 'times': times,
+        for data in (validation, ghost) if ghost else (validation,):
+            check_replay(data, info['UId'], best['Login'], best['Best'], info['NbCheckpoints'])
+        players = payload['players']
+        if (not isinstance(players, list) or len(players) != len(times)
+                or any(not isinstance(player, dict) or player.get('Login') != row['Login']
+                       or not isinstance(player.get('NickName'), str) or not isinstance(player.get('Path'), str)
+                       or type(player.get('IsSpec')) is not bool for player, row in zip(players, times))):
+            raise ReplayError('Invalid submission player metadata')
+        return {'map': info, 'times': times, 'players': players,
                 'replays': {'VReplay': Binary(validation), 'VReplayChecks': '',
                             'Top1GReplay': Binary(ghost) if ghost else ''}}
 

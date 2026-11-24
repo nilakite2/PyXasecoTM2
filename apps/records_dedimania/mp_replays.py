@@ -1,17 +1,96 @@
 """Bounded MP replay-header checks, following XAseco2's GBXReplayFetcher."""
 
+import json
+import os
+from pathlib import Path
 import re
+import stat
 import struct
 import xml.etree.ElementTree as ET
+from uuid import uuid4
 from xmlrpc.client import Binary
+
+from pyxaseco.management.config_store import data_path
 
 
 MAX_REPLAY_BYTES = 24 * 1024 * 1024
 MAX_BATCH_BYTES = 32 * 1024 * 1024
+MAX_BATCH_METADATA_BYTES = 64 * 1024 * 1024
+MAX_SPOOL_FILES = 1000
+MAX_SPOOL_BYTES = 2 * 1024 * 1024 * 1024
+SPOOL_HEADER = struct.Struct('<4sIII')
+SPOOL_MAGIC = b'DMP1'
 
 
 class ReplayError(ValueError):
     pass
+
+
+def _spool_path(root: Path, token: str) -> Path:
+    if not isinstance(token, str) or not re.fullmatch(r'[0-9a-f]{32}', token):
+        raise ReplayError('Invalid retained Dedimania batch reference')
+    return data_path(root, 'records', 'dedimania', token + '.batch')
+
+
+def spool_batch(root, payload, validation, ghost):
+    metadata = json.dumps(payload, ensure_ascii=True, allow_nan=False).encode('ascii')
+    if (len(metadata) > MAX_BATCH_METADATA_BYTES or not 17 <= len(validation) <= MAX_REPLAY_BYTES
+            or len(ghost) > MAX_REPLAY_BYTES or len(validation) + len(ghost) > MAX_BATCH_BYTES):
+        raise ReplayError('Retained Dedimania batch exceeds the evidence limit')
+    header = SPOOL_HEADER.pack(SPOOL_MAGIC, len(metadata), len(validation), len(ghost))
+    token = uuid4().hex
+    path = _spool_path(root, token)
+    part = data_path(root, 'records', 'dedimania', token + '.part')
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    size, count = len(header) + len(metadata) + len(validation) + len(ghost), 0
+    for entry in path.parent.iterdir():
+        if not re.fullmatch(r'[0-9a-f]{32}\.(?:batch|part)', entry.name):
+            continue
+        try:
+            info = entry.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISREG(info.st_mode):
+            count += 1
+            size += info.st_size
+        if count >= MAX_SPOOL_FILES or size > MAX_SPOOL_BYTES:
+            raise ReplayError('Dedimania replay spool is full; existing batches were kept')
+    created = False
+    try:
+        with part.open('xb') as stream:
+            created = True
+            for block in (header, metadata, validation, ghost):
+                stream.write(block)
+            stream.flush()
+            os.fsync(stream.fileno())
+        part.replace(path)
+    finally:
+        if created:
+            part.unlink(missing_ok=True)
+    return token
+
+
+def read_spooled_batch(root, token):
+    path = _spool_path(root, token)
+    if not stat.S_ISREG(path.stat().st_mode):
+        raise ReplayError('Retained Dedimania batch is not a regular file')
+    with path.open('rb') as stream:
+        header = stream.read(SPOOL_HEADER.size)
+        if len(header) != SPOOL_HEADER.size:
+            raise ReplayError('Truncated retained Dedimania batch')
+        magic, meta_size, valid_size, ghost_size = SPOOL_HEADER.unpack(header)
+        if (magic != SPOOL_MAGIC or not 1 <= meta_size <= MAX_BATCH_METADATA_BYTES
+                or not 17 <= valid_size <= MAX_REPLAY_BYTES or ghost_size > MAX_REPLAY_BYTES
+                or valid_size + ghost_size > MAX_BATCH_BYTES):
+            raise ReplayError('Invalid retained Dedimania batch size')
+        meta, validation, ghost = stream.read(meta_size), stream.read(valid_size), stream.read(ghost_size)
+        if ((len(meta), len(validation), len(ghost)) != (meta_size, valid_size, ghost_size) or stream.read(1)):
+            raise ReplayError('Incomplete or oversized retained Dedimania batch')
+    return json.loads(meta), (validation, ghost)
+
+
+def remove_spooled_batch(root, token):
+    _spool_path(root, token).unlink(missing_ok=True)
 
 
 class Reader:

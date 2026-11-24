@@ -17,7 +17,6 @@ APP_METADATA = {
     "modules": [
         "apps/tmx/service.py",
         "apps/tmx/tracklist.py",
-        "apps/tmx/challenge_widget.py",
         "apps/tmx/video.py",
     ],
     "entries": [

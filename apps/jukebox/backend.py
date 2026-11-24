@@ -676,7 +676,8 @@ async def force_jukebox_next(aseco: 'Aseco') -> bool:
             )
             return False
 
-        await aseco.client.query_ignore_result('ChooseNextChallenge', live_filename)
+        if not await aseco.client.query_ignore_result('ChooseNextChallenge', live_filename):
+            return False
         jukebox_check = wanted_uid
 
         logger.debug(
@@ -722,7 +723,8 @@ async def force_jukebox_track_next(aseco: 'Aseco', uid: str) -> bool:
         if not live_filename:
             return False
 
-        await aseco.client.query_ignore_result('ChooseNextChallenge', live_filename)
+        if not await aseco.client.query_ignore_result('ChooseNextChallenge', live_filename):
+            return False
         jukebox_check = wanted_uid
         logger.debug(
             '[Jukebox] force_jukebox_track_next: ChooseNextChallenge uid=%s filename=%r',
@@ -800,6 +802,9 @@ def _discard_downloaded_track(path: pathlib.Path, metadata: dict) -> None:
 
 
 async def _default_tmx_section(aseco: 'Aseco') -> str:
+    if getattr(aseco, 'is_maniaplanet', False):
+        from apps.tmx.maniaplanet import SECTION
+        return SECTION
     service = _tmx_service(aseco)
     impl = getattr(service, 'get_tmx_section', None) if service is not None else None
     return await impl(aseco) if callable(impl) else 'TMNF'
@@ -1196,12 +1201,14 @@ async def _search_tmx_tracks_legacy(aseco, section: str, *, name: str = '', auth
 
 
 async def _tmx_tags(aseco, section: str) -> list[tuple[int, str]]:
+    from apps.tmx import maniaplanet as mx
+
     cached = _tmx_tags_cache.get(section)
     if cached is not None:
         return cached
     from pyxaseco.core.external_io import request_json
     data = await request_json(aseco, 'tmx_search', 'GET',
-        'https://tm.mania.exchange/api/meta/tags' if section == 'MX' else
+        f'{mx.BASE}/api/meta/tags' if section == mx.SECTION else
         _tmx_api_url(section, 'meta/tags'), timeout=10, headers={'User-Agent': 'PyXaseco/1.3'})
     if not isinstance(data, list) or len(data) > TMX_TAG_LIMIT:
         raise ValueError('Invalid TMX tag list')
@@ -1369,11 +1376,9 @@ async def download_tmx_track(ref: str, tracks_root: pathlib.Path, source: str = 
     if runtime is None:
         raise RuntimeError('TMX download requires a registered controller runtime')
     jobs = get_tmx_jobs(runtime)
-    host, track_id = parse_tmx_reference(ref, source, aseco=runtime)
+    _, track_id = parse_tmx_reference(ref, source, aseco=runtime)
     payload = jobs.payload()
-    payload.update(kind='add', section=_tmx_section_for_public_host(host), track_id=track_id)
-    if payload.get('platform') != 'mp4':
-        payload['tracks_root'] = str(pathlib.Path(tracks_root).resolve())
+    payload.update(kind='add', track_id=track_id)
     prepared = None
     try:
         async with asyncio.timeout(TMX_JOB_POLICY.deadline_seconds):
@@ -2050,6 +2055,9 @@ async def _rasp_newtrack(aseco: 'Aseco', data):
         return
 
     uid = data.uid if hasattr(data, 'uid') else getattr(data, 'uid', '')
+    transitions = getattr(aseco.client, 'transitions', None)
+    preserve = transitions is not None and transitions.preserves_request(jukebox_check) and uid != jukebox_check
+    bridge = transitions is not None and transitions.is_bridge(uid)
 
     # Update history buffer
     if jb_buffer:
@@ -2072,7 +2080,7 @@ async def _rasp_newtrack(aseco: 'Aseco', data):
         logger.debug('[Jukebox] Could not persist track history: %s', exc)
 
     # Process jukebox
-    if jukebox:
+    if jukebox and not bridge:
         if uid in jukebox:
             play = jukebox[uid]
             if play.get('source') == 'Replay':
@@ -2085,7 +2093,7 @@ async def _rasp_newtrack(aseco: 'Aseco', data):
                 replays_total = 0
             del jukebox[uid]
             await aseco.release_event('onJukeboxChanged', ['play', play])
-        elif jukebox_check and jukebox_check in jukebox:
+        elif jukebox_check and jukebox_check in jukebox and not preserve:
             stuck = jukebox[jukebox_check]
             del jukebox[jukebox_check]
             await aseco.release_event('onJukeboxChanged', ['drop', stuck])
@@ -2100,7 +2108,7 @@ async def _rasp_newtrack(aseco: 'Aseco', data):
                 pass
         tmxplayed = False
 
-    if tmxplaying:
+    if tmxplaying and not (preserve or bridge):
         tmxplayed = tmxplaying
         tmxplaying = False
 

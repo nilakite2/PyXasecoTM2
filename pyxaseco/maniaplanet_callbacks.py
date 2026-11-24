@@ -93,6 +93,11 @@ def decode(method, params):
     if method in ('maniaplanet.beginmap', 'maniaplanet.endmap') and params and isinstance(params[0], dict):
         return {'event': 'map_begin' if method.endswith('beginmap') else 'map_end',
                 'source': 'dedicated', **_map_fields(params[0])}
+    if method == 'maniaplanet.beginmatch':
+        return {'event': 'match_begin', 'source': 'dedicated'}
+    if method == 'maniaplanet.endmatch':
+        return {'event': 'match_end', 'source': 'dedicated',
+                'rank_count': len(params[0]) if params and isinstance(params[0], list) else None}
     if method in ('maniaplanet.playerconnect', 'maniaplanet.playerdisconnect') and params and _text(params[0]):
         return {'event': 'join' if method.endswith('playerconnect') else 'leave',
                 'source': 'dedicated', 'login': params[0]}

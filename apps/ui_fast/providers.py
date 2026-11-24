@@ -57,9 +57,8 @@ async def snapshots(aseco):
             accessor = getattr(module, 'get_current_trial_records' if app == 'records_trial'
                                else 'get_current_rpg_records')
             sources.append(Source(app, label, command, normalise(await accessor(aseco))))
-        module = sys.modules.get('apps.records_dedimania.service')
         data = get_dedi_db(aseco) if 'records_dedimania' in active else {}
-        if module is not None and getattr(module, '_connected', False) and data.get('RecsValid'):
+        if data.get('RecsValid'):
             sources.append(Source('records_dedimania', 'Dedimania', '/dedirecs',
                                   normalise(data.get('Challenge', {}).get('Records', []))))
     local = []

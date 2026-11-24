@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from apps.platform_ui.hud_layout import POSITION_STEPS
 from pyxaseco.helpers import display_manialink_multi
 from pyxaseco.management.app_policy import PROTECTED_STANDALONE_APPS
+from pyxaseco.management.config_views import autosize_widths as _autosize_widths
 from .service import (
     LOADOUT_TOGGLE_APPS,
     _with_config_snapshot, get_service, _root_dir, read_toml,
@@ -78,47 +79,6 @@ def _show_preview_selector(aseco, admin):
                  _action_cell(admin, 'Stop', ('preview_select', 'ui', 'off', 'current')) if selection else ''])
     _show_apps_window(aseco, admin, f'Layout Preview ({status})', ['Icons128x128_1', 'Rankings'],
                       ['Game Mode', 'Race', 'Score'], rows)
-
-
-def _autosize_widths(
-    table_header: list[str],
-    entries: list[list[Any]],
-    *,
-    min_total: float = 1.08,
-    max_total: float = 1.38,
-) -> list[float]:
-    if not table_header:
-        return [min_total]
-
-    col_count = len(table_header)
-    max_lens = [max(4, len(str(head or ''))) for head in table_header]
-    for row in entries:
-        for idx in range(min(len(row), col_count)):
-            cell = row[idx]
-            text = cell[0] if isinstance(cell, list) else cell
-            max_lens[idx] = max(max_lens[idx], len(str(text or '')))
-
-    col_widths: list[float] = []
-    for idx, length in enumerate(max_lens):
-        if idx >= col_count - 2:
-            width = 0.12 + min(length, 12) * 0.014
-        elif idx == 0:
-            width = 0.18 + min(length, 48) * 0.020
-        else:
-            width = 0.12 + min(length, 40) * 0.015
-        col_widths.append(max(0.12, min(width, 1.10)))
-
-    total = sum(col_widths)
-    if total < min_total:
-        factor = min_total / total if total else 1.0
-        col_widths = [width * factor for width in col_widths]
-        total = sum(col_widths)
-    if total > max_total:
-        factor = max_total / total
-        col_widths = [width * factor for width in col_widths]
-        total = sum(col_widths)
-
-    return [max(min_total, min(total, max_total))] + [round(width, 3) for width in col_widths]
 
 
 def _show_apps_window(

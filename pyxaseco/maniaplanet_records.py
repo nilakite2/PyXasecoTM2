@@ -1,6 +1,5 @@
 """MP database configuration and migration from the first local-records test."""
 
-from contextlib import asynccontextmanager
 import json
 import os
 import re
@@ -8,15 +7,6 @@ import re
 
 class RecordsError(ValueError):
     """The dedicated MP records database could not be used."""
-
-
-SAVE_PB = '''
-INSERT INTO mp_local_records (map_uid, player_login, time_ms, splits_json)
-VALUES (%s, %s, %s, %s)
-ON DUPLICATE KEY UPDATE
-    splits_json = IF(VALUES(time_ms) < time_ms, VALUES(splits_json), splits_json),
-    time_ms = LEAST(time_ms, VALUES(time_ms))
-'''
 
 
 def db_config(env=None):
@@ -87,54 +77,3 @@ async def import_test_records(pool):
             await conn.rollback()
             raise
     return changed
-
-
-class LocalRecords:
-    def __init__(self, pool):
-        self.pool = pool
-
-    async def rows(self, sql, args=()):
-        async with self.pool.acquire() as connection, connection.cursor() as cursor:
-            await cursor.execute(sql, args)
-            return await cursor.fetchall()
-
-    async def save(self, uid, login, time_ms, splits):
-        data = json.dumps(splits, separators=(',', ':'))
-        async with self.pool.acquire() as connection, connection.cursor() as cursor:
-            await cursor.execute(SAVE_PB, (uid, login, time_ms, data))
-            return cursor.rowcount > 0
-
-    async def personal(self, uid, login):
-        rows = await self.rows('SELECT time_ms FROM mp_local_records WHERE map_uid=%s AND player_login=%s',
-                               (uid, login))
-        return rows[0][0] if rows else None
-
-    async def top(self, uid):
-        return await self.rows('SELECT player_login,time_ms FROM mp_local_records WHERE map_uid=%s '
-                               'ORDER BY time_ms,player_login LIMIT 10', (uid,))
-
-
-@asynccontextmanager
-async def connect_records(config):
-    try:
-        import aiomysql
-    except ImportError as error:
-        raise RecordsError('Install the Python requirements before running the MP controller.') from error
-    try:
-        pool = await aiomysql.create_pool(**config, minsize=1, maxsize=2, autocommit=True,
-                                          charset='utf8mb4', connect_timeout=5)
-    except (aiomysql.Error, OSError) as error:
-        raise RecordsError('Could not open the MP database. Check its address, credentials and grants.') from error
-    try:
-        records = LocalRecords(pool)
-        try:
-            await records.rows('SELECT map_uid,player_login,time_ms,splits_json FROM mp_local_records LIMIT 0')
-        except aiomysql.Error as error:
-            raise RecordsError('The MP table is not accessible. Import database/pyxasecomp_local_records.sql first.') from error
-        try:
-            yield records
-        except aiomysql.Error as error:
-            raise RecordsError('MP records stopped after a connection or database error.') from error
-    finally:
-        pool.close()
-        await pool.wait_closed()

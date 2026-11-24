@@ -40,6 +40,12 @@ ambiguous or inaccessible, set `PYXASECOMP_REPLAYS_DIR` to the absolute dedicate
 `.pyxaseco-dedimania` subdirectory and removed after reading. No existing replay
 files are overwritten or deleted.
 
+At map end, upload evidence is staged under `.pyxaseco-data/records/dedimania/`
+in the controller folder. The outbox keeps a reference instead of embedding
+replay bytes. Confirmed delivery removes its staged file; failed or uncertain
+batches keep their files for inspection. Do not delete staging files for
+pending or uncertain batches.
+
 Look for `[Dedimania MP] Staged`, `Queued`, and `Submission processed` in the log.
 Failures to obtain replay evidence are logged and never replaced with a time-only
 upload. Ambiguous writes become uncertain and are not automatically repeated.

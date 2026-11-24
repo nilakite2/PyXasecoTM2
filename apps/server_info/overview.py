@@ -10,6 +10,7 @@ import time
 from pyxaseco.helpers import _send_multipage, format_time, format_time_h, strip_colors
 from pyxaseco.core.service_health import health_for
 from pyxaseco import BUILD_LABEL, PRODUCT_NAME
+from pyxaseco.app_services import get_dedimania_service
 
 
 ACTION_BASE = 8530000
@@ -60,9 +61,8 @@ def enabled_integrations(aseco):
     if 'tmx' in active:
         label = 'ManiaExchange' if getattr(aseco, 'is_maniaplanet', False) else 'TMX'
         rows.append(('tmx', label))
-    dedi = _module('apps.records_dedimania.service')
-    config = getattr(dedi, 'dedi_db', {})
-    if 'records_dedimania' in active and config.get('Login') and config.get('Password'):
+    dedi = get_dedimania_service(aseco)
+    if 'records_dedimania' in active and dedi is not None and dedi.configured(aseco):
         rows.append(('dedimania', 'Dedimania'))
     karma = _module('apps.ui.karma')
     karma_config = getattr(karma, '_cfg', None)

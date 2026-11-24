@@ -3,18 +3,16 @@ TOML-first config loader for PyXaseco.
 
 Active runtime config now comes from TOML files:
   - config.toml
-  - apps.toml
+  - apps.mp.toml
   - adminops.toml
   - bannedips.toml
 
-The legacy XML parser remains available only for deferred or disabled assets.
 """
 
 from __future__ import annotations
 import logging
 import os
 import tomllib
-import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -228,49 +226,6 @@ def load_toml_file(path: str | Path) -> dict:
     except (FileNotFoundError, OSError, tomllib.TOMLDecodeError) as e:
         logger.error('load_toml_file: failed to parse %s: %s', path, e)
         return {}
-
-
-# ---------------------------------------------------------------------------
-# Generic XML parser retained for deferred/disabled legacy assets
-# ---------------------------------------------------------------------------
-
-def parse_xml_file(path: str | Path) -> dict:
-    """
-    Parse an XML file into a nested dict that mirrors Examsly's output.
-
-    Rules:
-      - Tag names are UPPERCASED (Examsly uses case-folding)
-      - Every element value is stored as a list (even singletons)
-      - Text content is stripped; numeric strings are kept as strings
-        (callers cast as needed, matching PHP behaviour)
-    """
-    try:
-        tree = ET.parse(str(path))
-    except (ET.ParseError, FileNotFoundError, OSError) as e:
-        logger.error('parse_xml_file: failed to parse %s: %s', path, e)
-        return {}
-    root = tree.getroot()
-    return {root.tag.upper(): _element_to_dict(root)}
-
-
-def _element_to_dict(elem: ET.Element) -> Any:
-    """Recursively convert an Element to the Examsly-style dict."""
-    children = list(elem)
-
-    if not children:
-        # Leaf node â€” return text (or empty string)
-        return (elem.text or '').strip()
-
-    result: dict[str, list] = {}
-    for child in children:
-        key = child.tag.upper()
-        value = _element_to_dict(child)
-        if key in result:
-            result[key].append(value)
-        else:
-            result[key] = [value]
-
-    return result
 
 
 # ---------------------------------------------------------------------------

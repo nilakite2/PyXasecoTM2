@@ -3,14 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import pathlib
-import random
-import re
-import urllib.parse
 from dataclasses import dataclass
-
-import aiohttp
 
 from pyxaseco.core.background_jobs import Admission, JobEnvelope, JobPolicy
 from pyxaseco.core.http_sessions import HttpPolicy
@@ -18,8 +12,6 @@ from pyxaseco.core.file_io import file_io
 from apps.tmx import maniaplanet as mx
 
 
-SUMMARY_FIELDS = 'TrackId,TrackName,UId,Authors,Environment,Style,AuthorTime'
-MAX_JSON_BYTES = 1024 * 1024
 MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
 TMX_JOB_POLICY = JobPolicy(capacity=8, workers=1, deadline_seconds=45)
 TMX_HTTP_POLICY = HttpPolicy(connections=2, connect_seconds=5, read_seconds=10, total_seconds=20)
@@ -69,100 +61,17 @@ class TmxTransport:
         from pyxaseco.core.service_health import observed_response
         return observed_response(self.aseco, 'tmx_downloads', self.session().get(url, **kwargs))
 
-    async def summary(self, section: str, track_id: int, routes: dict) -> dict | None:
-        from . import backend as b
-        url = routes[section]['api'] + '&' + urllib.parse.urlencode({'id': int(track_id)})
-        async with self.response(url, timeout=aiohttp.ClientTimeout(total=5),
-                                      headers={'User-Agent': 'PyXaseco/1.3'}) as response:
-            if response.status == 404:
-                return None
-            response.raise_for_status()
-            chunks, size = [], 0
-            async for chunk in response.content.iter_chunked(65536):
-                size += len(chunk)
-                if size > MAX_JSON_BYTES:
-                    raise ValueError('TMX metadata exceeds the response limit')
-                chunks.append(chunk)
-        data = json.loads(b''.join(chunks))
-        if not isinstance(data, dict) or not isinstance(data.get('Results'), list):
-            raise ValueError('Invalid TMX metadata response')
-        rows = data['Results']
-        if not rows:
-            return None
-        if not isinstance(rows[0], dict):
-            raise ValueError('Invalid TMX metadata row')
-        row = rows[0]
-        if int(row.get('TrackId', 0) or 0) != track_id:
-            raise ValueError('TMX API returned a different track ID')
-        result = b._normalise_tmx_track_row(row, section)
-        if result is not None:
-            result['uid'] = str(row.get('UId', '') or '').strip()
-            result['author_time'] = int(row.get('AuthorTime', 0) or 0)
-        return result
-
-    async def random_reference(self, section: str, routes: dict) -> int:
-        async with self.response(f"https://{routes[section]['public']}/trackrandom",
-                                      timeout=aiohttp.ClientTimeout(total=5),
-                                      max_redirects=5, headers={'User-Agent': 'PyXaseco/1.3'}) as response:
-            response.raise_for_status()
-            url = str(response.url)
-        match = re.search(r'/trackshow/(\d+)', urllib.parse.urlparse(url).path, re.IGNORECASE)
-        if match is not None:
-            return int(match.group(1))
-        values = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
-        for key in ('id', 'trackid'):
-            if values.get(key, [''])[0].isdigit():
-                return int(values[key][0])
-        raise ValueError('TMX random endpoint did not resolve a track ID')
-
     async def prepare(self, payload: dict, request_id: str) -> PreparedTrack:
         async with self._prepare_lock:
-            if payload.get('platform') == 'mp4':
-                if payload['kind'] == 'random':
-                    return await self._prepare_random_mx(payload, request_id)
-                track_id = int(payload['track_id'])
-                summary = await mx.fetch_map(self.aseco, track_id)
-                if not summary:
-                    raise mx.MapDownloadRejected('ManiaExchange map not found.')
-                mx.verify_download(summary, payload.get('title_id', 'TMStadium@nadeo'))
-                return await self._download(payload, request_id, mx.SECTION, track_id, summary)
             if payload['kind'] == 'random':
-                sections = list(payload['sections'])
-                random.shuffle(sections)
-                ignored = {str(item).casefold() for item in payload['ignored_styles']}
-                for attempt in range(max(6, len(sections) * 6)):
-                    section = sections[attempt % len(sections)]
-                    try:
-                        track_id = await self.random_reference(section, payload['routes'])
-                        summary = await self.summary(section, track_id, payload['routes'])
-                    except (aiohttp.ClientError, TimeoutError, ValueError):
-                        continue
-                    if not summary:
-                        continue
-                    if str(summary.get('style', '')).casefold() in ignored:
-                        continue
-                    limit = int(payload['max_author_time_seconds'])
-                    author = int(summary.get('author_time', 0) or 0)
-                    if limit > 0 and (author <= 0 or author > limit * 1000):
-                        continue
-                    uid = str(summary.get('uid', ''))
-                    if uid in payload['queued_uids']:
-                        continue
-                    if uid and uid in payload['live_uids']:
-                        return PreparedTrack(None, pathlib.Path(payload['tracks_root']),
-                                             payload['download_dir'], payload['routes'][section]['public'],
-                                             track_id, section, summary, {'UId': uid})
-                    return await self._download(payload, request_id, section, track_id, summary)
-                raise ValueError('No eligible random TMX map within the attempt limit')
-            section, track_id = payload['section'], int(payload['track_id'])
-            try:
-                summary = await self.summary(section, track_id, payload['routes'])
-            except (aiohttp.ClientError, TimeoutError, json.JSONDecodeError):
-                # Explicit adds historically work without API enrichment.
-                # Wrong IDs/oversized responses and available-API UID conflicts
-                # remain hard failures; random selection still needs metadata.
-                summary = None
-            return await self._download(payload, request_id, section, track_id, summary)
+                return await self._prepare_random_mx(payload, request_id)
+            track_id = int(payload['track_id'])
+            summary = await mx.fetch_map(self.aseco, track_id)
+            if not summary:
+                raise mx.MapDownloadRejected('ManiaExchange map not found.')
+            mx.verify_download(summary, payload.get('title_id', 'TMStadium@nadeo'))
+            return await self._download(payload, request_id, track_id, summary)
+
 
     async def _prepare_random_mx(self, payload, request_id):
         active = payload['title_id']
@@ -183,12 +92,12 @@ class TmxTransport:
             if summary['uid'] in live:
                 return PreparedTrack(None, pathlib.Path(payload['tracks_root']), payload['download_dir'],
                                      mx.HOST, summary['id'], mx.SECTION, summary, {'UId': summary['uid']})
-            return await self._download(payload, request_id, mx.SECTION, summary['id'], summary)
+            return await self._download(payload, request_id, summary['id'], summary)
         raise mx.MapDownloadRejected('No eligible random MX map was found for this title and filters.')
 
-    async def _download(self, payload, request_id, section, track_id, summary):
+    async def _download(self, payload, request_id, track_id, summary):
         from . import backend as b
-        provider = 'MX' if section == mx.SECTION else 'TMX'
+        provider = mx.SECTION
         root = pathlib.Path(payload['tracks_root']).resolve()
         directory = (root / payload['download_dir']).resolve()
         if not directory.is_relative_to(root) or directory == root:
@@ -197,16 +106,14 @@ class TmxTransport:
         path = directory / f'.pyxaseco_{request_id}.part'
         handle = None
         created = False
-        is_mx = section == mx.SECTION
-        host = mx.HOST if is_mx else payload['routes'][section]['public']
-        url = mx.map_download_url(track_id) if is_mx else f'https://{host}/trackgbx/{track_id}'
+        url = mx.map_download_url(track_id)
         try:
             await file_io(directory.mkdir, parents=True, exist_ok=True)
             # Opening a local file does not perform network I/O. Keep ownership
             # in this task so cancellation cannot strand an executor-open handle.
             handle = path.open('xb')
             created = True
-            async with self.response(url, allow_redirects=not is_mx,
+            async with self.response(url, allow_redirects=False,
                                           headers={'Accept-Encoding': 'identity', 'User-Agent': 'PyXaseco/1.3'},
                                           auto_decompress=False) as response:
                 response.raise_for_status()
@@ -237,7 +144,7 @@ class TmxTransport:
             api_uid = str((summary or {}).get('uid', '') or '')
             if api_uid and uid != api_uid:
                 raise ValueError(f'{provider} download/API UID mismatch')
-            if is_mx and payload.get('strict_titlepacks', False):
+            if payload.get('strict_titlepacks', False):
                 from pyxaseco.maniaplanet_maps import check_title, map_identity, TitleMismatch
                 try:
                     identity = await file_io(map_identity, path)
@@ -248,7 +155,7 @@ class TmxTransport:
             for field in ('name', 'author', 'environment'):
                 metadata[field] = metadata.get(field) or (summary or {}).get(field, '')
             metadata['uid'] = uid
-            return PreparedTrack(path, root, payload['download_dir'], host, track_id, section, metadata)
+            return PreparedTrack(path, root, payload['download_dir'], mx.HOST, track_id, mx.SECTION, metadata)
         except BaseException:
             try:
                 if handle is not None:
@@ -288,47 +195,32 @@ class TmxJobs:
         self.service = aseco.jobs.service('tmx_downloads', TMX_JOB_POLICY)
         self._commit_lock = asyncio.Lock()
 
-    def routes(self):
-        from . import backend as b
-        service = b._tmx_service(self.aseco)
-        if service is None:
-            raise RuntimeError('TMX service is unavailable')
-        return {section: {
-            'public': service.tmx_public_host_for_section(section),
-            'api': b._tmx_api_url(section, 'tracks', fields=SUMMARY_FIELDS),
-        } for section in b.TMX_SECTION_CHOICES}
-
     def payload(self):
         from . import backend as b
-        if getattr(self.aseco, 'is_maniaplanet', False):
-            root = b._mp_maps_root(self.aseco)
-            guard = self.aseco.client.map_guard
-            return {'tracks_root': str(root), 'download_dir': 'MX', 'platform': 'mp4',
-                    'title_id': mx.server_title(self.aseco), 'strict_titlepacks': guard.enabled,
-                    'base_title': guard.policy()[1] if guard.enabled else ''}
-        root = pathlib.Path(getattr(self.aseco.settings, 'tracks_root',
-                                   self.aseco._base_dir.parent / 'GameData' / 'Tracks' / 'Challenges')).resolve()
-        return {'tracks_root': str(root), 'download_dir': b.TMX_DOWNLOAD_DIR,
-                'routes': self.routes()}
+        root = b._mp_maps_root(self.aseco)
+        guard = self.aseco.client.map_guard
+        return {'tracks_root': str(root), 'download_dir': 'MX',
+                'title_id': mx.server_title(self.aseco), 'strict_titlepacks': guard.enabled,
+                'base_title': guard.policy()[1] if guard.enabled else ''}
+
 
     async def request(self, *, login, nickname, complete, ref='', section='', random_filters=None,
                       vote=False, require_feature_flags=True, current_map=False,
                       guard=None, discarded=None, acknowledge=True, persist=False,
                       apply_promoted=None, queue_for_play=True) -> Admission:
         from . import backend as b
-        provider = 'MX' if getattr(self.aseco, 'is_maniaplanet', False) else 'TMX'
+        provider = mx.SECTION
         if 'jukebox' not in self.aseco.active_apps:
             raise RuntimeError('The Jukebox app is disabled.')
         payload = self.payload()
         requester = self.aseco.server.players.get_player(login) if login else None
         if random_filters is not None:
-            sections = [mx.SECTION] if provider == 'MX' else b._normalise_tmx_sections(random_filters['sections'])
             from pyxaseco.core.playlist import playlist
             tracks = await playlist(self.aseco).snapshot()
             queued = list(b.jukebox)
-            if provider == 'MX' and self.aseco.server.challenge.uid:
+            if self.aseco.server.challenge.uid:
                 queued.append(self.aseco.server.challenge.uid)
-            payload.update(kind='random', sections=sections,
+            payload.update(kind='random',
                            ignored_styles=list(random_filters['ignored_styles']),
                            max_author_time_seconds=int(random_filters['max_author_time_seconds']),
                            queued_uids=queued, live_uids=[
@@ -337,12 +229,9 @@ class TmxJobs:
                            ])
             key = 'random'
         else:
-            if not section:
-                section = await b._default_tmx_section(self.aseco)
-            host, track_id = b.parse_tmx_reference(ref, section, aseco=self.aseco)
-            section = b._tmx_section_for_public_host(host)
-            payload.update(kind='add', section=section, track_id=track_id)
-            key = f'{section}:{track_id}:{vote}'
+            _, track_id = b.parse_tmx_reference(ref, section or mx.SECTION, aseco=self.aseco)
+            payload.update(kind='add', track_id=track_id)
+            key = f'{mx.SECTION}:{track_id}:{vote}'
         key += f':{persist}:{apply_promoted is not None}:{id(requester)}'
         live_uids = tuple(payload.pop('live_uids', ()))
         job = JobEnvelope.capture(self.aseco.capture_job_context(login=login, nickname=nickname), payload)

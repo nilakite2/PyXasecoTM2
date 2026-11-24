@@ -20,6 +20,11 @@ from .instances import Instance
 WINSW_VERSION = '2.12.0'
 
 
+def _require_service_launcher(controller):
+    if (Path(controller) / 'apps.mp.toml').is_file():
+        raise ManagementError('Supervised OS service definitions are not supported by the PyXasecoMP launcher')
+
+
 @dataclass(frozen=True)
 class ServicePlan:
     instance_id: str
@@ -41,6 +46,7 @@ class ServicePlan:
     @classmethod
     def from_instance(cls, instance: Instance, *, platform: str, manage_dedicated=False,
                       user='', automatic=False):
+        _require_service_launcher(instance.controller)
         if platform not in ('windows', 'linux'):
             raise ManagementError('Service platform must be windows or linux')
         if manage_dedicated and not instance.dedicated:
@@ -169,6 +175,7 @@ def render_winsw(plan: ServicePlan, plan_path: Path, target: str) -> str:
 
 def prepare_bundle(plan: ServicePlan, destination: str | Path) -> Path:
     """Write reviewable artifacts only; never install, elevate or start services."""
+    _require_service_launcher(plan.controller)
     plan.validate()
     destination = Path(destination).resolve()
     if plan.platform == 'windows' and '%' in str(destination):
