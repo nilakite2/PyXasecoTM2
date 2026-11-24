@@ -7,6 +7,10 @@ search and jukebox tools, admin commands, and customizable in-game widgets.
 ShootMania, non-Time Attack modes, and TrackMania Forever are not supported
 by this edition.
 
+Version 1.1 removes unused TMF code, adds opt-in dedicated-server recovery
+with automatic unsafe-transition learning, and keeps large Dedimania replay
+batches out of the record queue payload.
+
 ## Install
 
 You need Python 3.12, a ManiaPlanet 4 TrackMania dedicated server on the
@@ -111,6 +115,8 @@ run `//apps updates`, and review `//apps update controller` before confirming.
 The updater requires matching releases from both providers. It preserves live
 configuration and locally modified files. Review any retained code before
 restarting with `//pyres`.
+Keep `unsafe_transitions_log.txt` and `.pyxaseco-data/` when updating manually:
+they hold learned map pairs, recovery evidence, and queued record data.
 
 ## Credits And License
 

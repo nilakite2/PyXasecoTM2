@@ -97,6 +97,8 @@ async def chat_xaseco(aseco: 'Aseco', command: dict):
     login = player.login
     is_mp = getattr(aseco, 'is_maniaplanet', False)
     product, version = (PRODUCT_NAME, BUILD_LABEL) if is_mp else ('PyXaseco', PYXASECO_VERSION)
+    website = ('https://github.com/nilakite2/PyXasecoTM2' if is_mp
+               else 'http://github.com/nilakite2/PyXaseco')
 
     uptime_s = int(time.time()) - aseco.uptime
     updays = uptime_s // (24 * 3600)
@@ -145,7 +147,7 @@ async def chat_xaseco(aseco: 'Aseco', command: dict):
     info += [
         ['Uptime', '{#black}' + f'{updays} day{"s" if updays != 1 else " "} ' +
          format_time_h(uptime_rem * 1000, False)],
-        ['Website', '{#black}$l[http://github.com/nilakite2/PyXaseco]http://github.com/nilakite2/PyXaseco$l'],
+        ['Website', f'{{#black}}$l[{website}]{website}$l'],
         ['Credits', '{#black}Python port: Nila'],
         ['', '{#black}Original authors: Xymph, Flo, Assembler Maniac, Jfreu & others'],
     ]
